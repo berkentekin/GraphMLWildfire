@@ -6,9 +6,6 @@ import requests
 from remotezip import RemoteZip
 from tqdm import tqdm
 
-from .convert_hdf5 import convert_dataset, convert_fire
-
-
 ARCHIVE_URL = "https://zenodo.org/api/records/8006177/files/WildfireSpreadTS.zip/content"
 
 
@@ -62,7 +59,7 @@ def download_full_dataset(output_dir: str | Path) -> None:
     partial_path = archive_path.with_suffix(".zip.part")
 
     print("WARNING: The full dataset download is about 50 GB and may take many hours.")
-    print("Additional disk space is needed for the ZIP, extracted TIFFs, and HDF5 files.")
+    print("Additional disk space is needed temporarily for the ZIP and extracted TIFFs.")
 
     if not archive_path.exists():
         with requests.get(ARCHIVE_URL, stream=True, timeout=(30, None)) as response:
@@ -92,58 +89,11 @@ def download_full_dataset(output_dir: str | Path) -> None:
     print(f"Full dataset extracted to {output_dir}")
 
 
-def prepare_fire(
-    raw_dir: str | Path,
-    processed_dir: str | Path,
-    year: int,
-    fire_name: str,
-) -> Path:
-    """Download one fire and convert it to HDF5."""
-
-    download_sample(raw_dir, year, fire_name)
-    fire_dir = Path(raw_dir) / str(year) / fire_name
-    output_path = Path(processed_dir) / str(year) / f"{fire_name}.hdf5"
-    with tqdm(total=1, desc="Converting fires", unit="fire") as progress:
-        progress.set_postfix_str(f"{year}/{fire_name}")
-        convert_fire(fire_dir, output_path, overwrite=True)
-        progress.update()
-    print(f"HDF5 file ready: {output_path}")
-    return output_path
-
-
-def prepare_year(
-    raw_dir: str | Path,
-    processed_dir: str | Path,
-    year: int,
-) -> list[Path]:
-    """Download all fires from one year and convert them to HDF5."""
-
-    download_sample(raw_dir, year)
-    converted = convert_dataset(
-        raw_dir,
-        processed_dir,
-        years=[year],
-        overwrite=True,
-    )
-    print(f"Created {len(converted)} HDF5 files for {year}")
-    return converted
-
-
-def prepare_full_dataset(raw_dir: str | Path, processed_dir: str | Path) -> list[Path]:
-    """Download the full dataset and convert every fire to HDF5."""
-
-    download_full_dataset(raw_dir)
-    converted = convert_dataset(raw_dir, processed_dir, overwrite=True)
-    print(f"Created {len(converted)} HDF5 files")
-    return converted
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Download WildfireSpreadTS data"
     )
     parser.add_argument("--raw-dir", default="data/raw/wildfirespreadts")
-    parser.add_argument("--processed-dir", default="data/processed/wildfirespreadts")
     parser.add_argument("--year", type=int, help="Year to download")
     parser.add_argument(
         "--fire",
@@ -159,23 +109,15 @@ def main() -> None:
     if args.full_dataset:
         if args.year is not None or args.fire is not None:
             parser.error("--full-dataset cannot be combined with --year or --fire")
-        prepare_full_dataset(args.raw_dir, args.processed_dir)
+        download_full_dataset(args.raw_dir)
         return
 
     if args.year is None:
         parser.error("--year is required unless --full-dataset is used")
 
-    if args.fire is None:
-        prepare_year(args.raw_dir, args.processed_dir, args.year)
-        return
-
-    output_path = prepare_fire(
-        raw_dir=args.raw_dir,
-        processed_dir=args.processed_dir,
-        year=args.year,
-        fire_name=args.fire,
-    )
-    print(f"Ready to load: {output_path}")
+    files = download_sample(args.raw_dir, args.year, args.fire)
+    print(f"Downloaded data is ready under {Path(args.raw_dir) / str(args.year)}")
+    print(f"Available GeoTIFF files: {len(files)}")
 
 
 if __name__ == "__main__":
