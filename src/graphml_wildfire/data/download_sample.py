@@ -15,11 +15,11 @@ ARCHIVE_URL = "https://zenodo.org/api/records/8006177/files/WildfireSpreadTS.zip
 def select_files(
     names: list[str],
     year: int,
-    fire_name: str,
+    fire_name: str | None = None,
 ) -> list[str]:
-    """Select all TIFF files belonging to one fire."""
+    """Select TIFF files belonging to one fire or a complete year."""
 
-    prefix = f"{year}/{fire_name}/"
+    prefix = f"{year}/{fire_name}/" if fire_name else f"{year}/"
     return sorted(
         name for name in names if name.startswith(prefix) and name.endswith(".tif")
     )
@@ -28,15 +28,16 @@ def select_files(
 def download_sample(
     output_dir: str | Path,
     year: int,
-    fire_name: str,
+    fire_name: str | None = None,
 ) -> list[Path]:
-    """Download selected TIFFs without downloading the complete ZIP archive."""
+    """Download one fire or year without downloading the complete ZIP archive."""
 
     output_dir = Path(output_dir)
     with RemoteZip(ARCHIVE_URL) as archive:
         files = select_files(archive.namelist(), year, fire_name)
         if not files:
-            raise ValueError(f"No files found for {year}/{fire_name}")
+            selection = f"{year}/{fire_name}" if fire_name else str(year)
+            raise ValueError(f"No files found for {selection}")
 
         info_by_name = {info.filename: info for info in archive.infolist()}
         size_mb = sum(info_by_name[name].compress_size for name in files) / 1024**2
@@ -110,6 +111,24 @@ def prepare_fire(
     return output_path
 
 
+def prepare_year(
+    raw_dir: str | Path,
+    processed_dir: str | Path,
+    year: int,
+) -> list[Path]:
+    """Download all fires from one year and convert them to HDF5."""
+
+    download_sample(raw_dir, year)
+    converted = convert_dataset(
+        raw_dir,
+        processed_dir,
+        years=[year],
+        overwrite=True,
+    )
+    print(f"Created {len(converted)} HDF5 files for {year}")
+    return converted
+
+
 def prepare_full_dataset(raw_dir: str | Path, processed_dir: str | Path) -> list[Path]:
     """Download the full dataset and convert every fire to HDF5."""
 
@@ -125,8 +144,11 @@ def main() -> None:
     )
     parser.add_argument("--raw-dir", default="data/raw/wildfirespreadts")
     parser.add_argument("--processed-dir", default="data/processed/wildfirespreadts")
-    parser.add_argument("--year", type=int)
-    parser.add_argument("--fire")
+    parser.add_argument("--year", type=int, help="Year to download")
+    parser.add_argument(
+        "--fire",
+        help="Fire ID to download; omit to download every fire in the year",
+    )
     parser.add_argument(
         "--full-dataset",
         action="store_true",
@@ -140,8 +162,12 @@ def main() -> None:
         prepare_full_dataset(args.raw_dir, args.processed_dir)
         return
 
-    if args.year is None or args.fire is None:
-        parser.error("--year and --fire are required unless --full-dataset is used")
+    if args.year is None:
+        parser.error("--year is required unless --full-dataset is used")
+
+    if args.fire is None:
+        prepare_year(args.raw_dir, args.processed_dir, args.year)
+        return
 
     output_path = prepare_fire(
         raw_dir=args.raw_dir,

@@ -16,14 +16,20 @@ uv run python -m graphml_wildfire.data.download_sample \
   --fire fire_22343689
 ```
 
+Omit the fire ID to download and convert every fire from one year:
+
+```bash
+uv run python -m graphml_wildfire.data.download_sample --year 2019
+```
+
 To download and convert the full dataset:
 
 ```bash
 uv run python -m graphml_wildfire.data.download_sample --full-dataset
 ```
 
-The full download is approximately 50 GB and may take several hours. Both
-commands keep the raw TIFFs and create HDF5 files under
+The full download is approximately 50 GB and may take several hours. All
+download commands keep the raw TIFFs and create HDF5 files under
 `data/processed/wildfirespreadts`.
 
 ### Load the data
