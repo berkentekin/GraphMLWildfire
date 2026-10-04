@@ -110,3 +110,36 @@ print(sample["target"].shape)
 `create_year_folds()` returns the 12 two-train, one-validation, one-test folds
 over 2018-2021. Graph edges and shift operators are intentionally constructed
 after this data pipeline.
+
+## Build Graphs
+
+Convert a normalized node grid into arrays, then build
+the grid shift operator:
+
+```python
+from graphml_wildfire.graph import (
+    build_grid_shift,
+    create_graph_sample,
+)
+
+graph_sample = create_graph_sample(normalized_training_dataset[0])
+grid_shift = build_grid_shift(graph_sample.grid_shape)
+```
+
+`GraphSample.x` has shape `[N, 45]`: the 42 preprocessed model features plus
+current-fire presence, current-fire fraction, and coverage. Targets, positions,
+raw physics values, and fire fractions remain available as separate arrays.
+
+Each `ShiftOperator` stores the nonzero entries of `S` without constructing a
+dense matrix:
+
+```text
+edge_index:  [2, E]
+edge_weight: [E]
+edge_attr:   [E, D] or None
+```
+
+For edge `i -> j`, the convention is `S[j, i] = edge_weight`. The grid operator
+uses the directed eight-neighbor topology and gives every
+edge raw weight `1`. Shift normalization, self-loops, physics-based operators,
+and framework-specific conversion are left to later stages.
