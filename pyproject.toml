@@ -9,6 +9,7 @@ description = "Final project for Graph Machine Learning course"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "affine>=2.4.0",
     "h5py>=3.15.1",
     "numpy>=2.5.3",
     "rasterio>=1.5.2",

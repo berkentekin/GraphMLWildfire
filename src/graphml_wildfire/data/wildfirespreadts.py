@@ -6,6 +6,8 @@ from typing import Iterable
 import h5py
 import numpy as np
 
+from .splits import read_fire_manifest
+
 
 @dataclass(frozen=True)
 class FirePair:
@@ -21,7 +23,10 @@ class FirePair:
 
     @property
     def sample_id(self) -> str:
-        return f"{self.year}_{self.fire_name}_{self.input_date.isoformat()}"
+        return (
+            f"{self.year}/{self.fire_name}/"
+            f"{self.input_date.isoformat()}__{self.target_date.isoformat()}"
+        )
 
 
 def _read_hdf5_dates(values) -> list[date]:
@@ -33,7 +38,18 @@ def _read_hdf5_dates(values) -> list[date]:
     return dates
 
 
-def find_fire_pairs(data_dir: str | Path, years: Iterable[int] | None = None) -> list[FirePair]:
+def _read_strings(values) -> tuple[str, ...]:
+    return tuple(
+        value.decode("utf-8") if isinstance(value, bytes) else str(value)
+        for value in values
+    )
+
+
+def find_fire_pairs(
+    data_dir: str | Path,
+    years: Iterable[int] | None = None,
+    fire_manifest: str | Path | None = None,
+) -> list[FirePair]:
     """Find consecutive daily pairs in converted HDF5 fire files."""
 
     root = Path(data_dir)
@@ -41,18 +57,25 @@ def find_fire_pairs(data_dir: str | Path, years: Iterable[int] | None = None) ->
         raise FileNotFoundError(f"Dataset directory does not exist: {root}")
 
     if years is None:
-        year_dirs = sorted(path for path in root.iterdir() if path.is_dir() and path.name.isdigit())
+        year_dirs = sorted(
+            path for path in root.iterdir() if path.is_dir() and path.name.isdigit()
+        )
     else:
         year_dirs = [root / str(year) for year in years]
 
+    selected_fires = read_fire_manifest(fire_manifest) if fire_manifest else None
     pairs = []
     for year_dir in year_dirs:
         if not year_dir.is_dir():
             raise FileNotFoundError(f"Year directory does not exist: {year_dir}")
         files = sorted([*year_dir.glob("*.hdf5"), *year_dir.glob("*.h5")])
         for file_path in files:
+            if selected_fires is not None and (
+                int(year_dir.name), file_path.stem
+            ) not in selected_fires:
+                continue
             with h5py.File(file_path, "r") as source:
-                dates = _read_hdf5_dates(source["data"].attrs["img_dates"])
+                dates = _read_hdf5_dates(source.attrs["img_dates"])
 
             for index, (input_date, target_date) in enumerate(zip(dates, dates[1:])):
                 if (target_date - input_date).days != 1:
@@ -73,14 +96,15 @@ def find_fire_pairs(data_dir: str | Path, years: Iterable[int] | None = None) ->
 
 
 class WildfireSpreadTSDataset:
-    """Dataset wrapper for one-day examples stored as HDF5 files."""
+    """Load unnormalized node grids for consecutive WildfireSpreadTS days."""
 
     def __init__(
         self,
         data_dir: str | Path,
         years: Iterable[int] | None = None,
+        fire_manifest: str | Path | None = None,
     ):
-        self.pairs = find_fire_pairs(data_dir, years)
+        self.pairs = find_fire_pairs(data_dir, years, fire_manifest)
 
     def __len__(self) -> int:
         return len(self.pairs)
@@ -88,25 +112,47 @@ class WildfireSpreadTSDataset:
     def __getitem__(self, index: int) -> dict:
         pair = self.pairs[index]
         with h5py.File(pair.file_path, "r") as source:
-            data = source["data"]
-            features = data[pair.input_index].astype(np.float32)
-            next_day = data[pair.target_index].astype(np.float32)
-            transform = tuple(data.attrs["transform"])
-            crs = str(data.attrs["crs"])
+            features = source["features"][pair.input_index].astype(np.float32)
+            current_fire = source["fire_presence"][pair.input_index].astype(np.uint8)
+            current_fire_fraction = source["fire_fraction"][pair.input_index].astype(
+                np.float32
+            )
+            next_fire = source["fire_presence"][pair.target_index].astype(np.uint8)
+            next_fire_fraction = source["fire_fraction"][pair.target_index].astype(
+                np.float32
+            )
+            physics = source["physics"][pair.input_index].astype(np.float32)
+            coverage = source["coverage"][:].astype(np.float32)
+            positions = source["positions"][:]
+            transform = tuple(source.attrs["node_transform"])
+            crs = str(source.attrs["crs"])
+            feature_names = _read_strings(source.attrs["feature_names"])
+            continuous_feature_indices = tuple(
+                int(value) for value in source.attrs["continuous_feature_indices"]
+            )
+            physics_names = _read_strings(source.attrs["physics_names"])
 
-        if features.shape[1:] != next_day.shape[1:]:
+        if features.shape[1:] != next_fire.shape:
             raise ValueError(f"Image sizes do not match for sample {pair.sample_id}")
-
-        # The final WildfireSpreadTS channel is active-fire detection time.
-        target = np.nan_to_num(next_day[-1], nan=0.0) > 0
 
         return {
             "sample_id": pair.sample_id,
             "features": features,
-            "target": target.astype(np.int64),
+            "feature_names": feature_names,
+            "continuous_feature_indices": continuous_feature_indices,
+            "current_fire": current_fire,
+            "current_fire_fraction": current_fire_fraction,
+            "next_fire": next_fire,
+            "next_fire_fraction": next_fire_fraction,
+            "physics": physics,
+            "physics_names": physics_names,
+            "coverage": coverage,
+            "positions": positions,
+            "grid_shape": next_fire.shape,
             "year": pair.year,
             "fire_name": pair.fire_name,
             "date": pair.input_date.isoformat(),
+            "target_date": pair.target_date.isoformat(),
             "transform": transform,
             "crs": crs,
         }
