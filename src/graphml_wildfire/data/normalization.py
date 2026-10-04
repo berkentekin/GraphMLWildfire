@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from time import perf_counter
 
 import numpy as np
 from tqdm import tqdm
@@ -83,17 +82,9 @@ class NormalizedWildfireSpreadTSDataset:
         self,
         dataset: WildfireSpreadTSDataset,
         statistics: FeatureStatistics,
-        report_timing: bool = False,
-        timing_interval: int = 100,
     ):
         self.dataset = dataset
         self.statistics = statistics
-        self.report_timing = report_timing
-        self.timing_interval = timing_interval
-        self._count = 0
-        self._seconds = 0.0
-        if timing_interval < 1:
-            raise ValueError("timing_interval must be at least 1")
         if self.statistics.means.shape != self.statistics.standard_deviations.shape:
             raise ValueError("Statistics means and standard deviations must have equal shapes")
         if self.statistics.means.shape != (len(self.statistics.feature_names),):
@@ -104,7 +95,6 @@ class NormalizedWildfireSpreadTSDataset:
 
     def __getitem__(self, index: int) -> dict:
         sample = self.dataset[index]
-        started = perf_counter()
         if sample["feature_names"] != self.statistics.feature_names:
             raise ValueError("Statistics do not match the dataset feature names")
         if (
@@ -124,16 +114,4 @@ class NormalizedWildfireSpreadTSDataset:
         result = dict(sample)
         result["features"] = features.astype(np.float32)
         result["target"] = sample["next_fire"].astype(np.int64)
-
-        elapsed = perf_counter() - started
-        self._count += 1
-        self._seconds += elapsed
-        if self.report_timing and (
-            self._count == 1 or self._count % self.timing_interval == 0
-        ):
-            mean_ms = self._seconds / self._count * 1000
-            print(
-                f"Normalization: {self._count} samples, mean={mean_ms:.2f} ms, "
-                f"latest={elapsed * 1000:.2f} ms"
-            )
         return result

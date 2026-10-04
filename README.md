@@ -44,8 +44,7 @@ The node side length is `block size x 375 m`.
 
 Each HDF5 file contains all days for one fire. It stores aggregated model
 features, land-cover proportions, fire presence and fraction, raw physics
-features, coverage, positions, dates, and geospatial metadata. Preprocessing
-prints total and per-fire elapsed time.
+features, coverage, positions, dates, and geospatial metadata.
 
 Here, `D` is the number of days for the fire, while `R` and `C` are the node
 grid dimensions.
@@ -96,13 +95,11 @@ training_dataset = WildfireSpreadTSDataset(
     "data/processed/wildfirespreadts",
     years=current_fold_training_years,
     fire_manifest="data/manifests/selected_fires.csv",
-    report_timing=True,
 )
-training_statistics = compute_statistics(raw_dataset)
+training_statistics = compute_statistics(training_dataset)
 normalized_training_dataset = NormalizedWildfireSpreadTSDataset(
     training_dataset,
     training_statistics,
-    report_timing=True,
 )
 
 sample = normalized_training_dataset[0]

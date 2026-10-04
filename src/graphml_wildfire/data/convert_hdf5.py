@@ -1,7 +1,6 @@
 import argparse
 from datetime import date
 from pathlib import Path
-from time import perf_counter
 from typing import Iterable
 
 import h5py
@@ -309,7 +308,6 @@ def convert_dataset(
             fires.append((year_dir, fire_dir))
 
     converted = []
-    started = perf_counter()
     progress = tqdm(
         fires, desc="Preprocessing fires", unit="fire", disable=not show_progress
     )
@@ -319,12 +317,6 @@ def convert_dataset(
         if convert_fire(fire_dir, output_path, overwrite, block_size):
             converted.append(output_path)
 
-    elapsed = perf_counter() - started
-    average = elapsed / len(converted) if converted else 0.0
-    print(
-        f"Preprocessed {len(converted)} fires in {elapsed:.2f}s "
-        f"({average:.2f}s per converted fire)"
-    )
     return converted
 
 

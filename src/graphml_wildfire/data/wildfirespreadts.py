@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from time import perf_counter
 from typing import Iterable
 
 import h5py
@@ -104,22 +103,13 @@ class WildfireSpreadTSDataset:
         data_dir: str | Path,
         years: Iterable[int] | None = None,
         fire_manifest: str | Path | None = None,
-        report_timing: bool = False,
-        timing_interval: int = 100,
     ):
         self.pairs = find_fire_pairs(data_dir, years, fire_manifest)
-        self.report_timing = report_timing
-        self.timing_interval = timing_interval
-        self._load_count = 0
-        self._load_seconds = 0.0
-        if timing_interval < 1:
-            raise ValueError("timing_interval must be at least 1")
 
     def __len__(self) -> int:
         return len(self.pairs)
 
     def __getitem__(self, index: int) -> dict:
-        started = perf_counter()
         pair = self.pairs[index]
         with h5py.File(pair.file_path, "r") as source:
             features = source["features"][pair.input_index].astype(np.float32)
@@ -144,18 +134,6 @@ class WildfireSpreadTSDataset:
 
         if features.shape[1:] != next_fire.shape:
             raise ValueError(f"Image sizes do not match for sample {pair.sample_id}")
-
-        elapsed = perf_counter() - started
-        self._load_count += 1
-        self._load_seconds += elapsed
-        if self.report_timing and (
-            self._load_count == 1 or self._load_count % self.timing_interval == 0
-        ):
-            mean_ms = self._load_seconds / self._load_count * 1000
-            print(
-                f"HDF5 loading: {self._load_count} samples, "
-                f"mean={mean_ms:.2f} ms, latest={elapsed * 1000:.2f} ms"
-            )
 
         return {
             "sample_id": pair.sample_id,
