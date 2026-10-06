@@ -141,5 +141,4 @@ edge_attr:   [E, D] or None
 
 For edge `i -> j`, the convention is `S[j, i] = edge_weight`. The grid operator
 uses the directed eight-neighbor topology and gives every
-edge raw weight `1`. Shift normalization, self-loops, physics-based operators,
-and framework-specific conversion are left to later stages.
+edge raw weight `1`.
