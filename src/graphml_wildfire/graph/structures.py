@@ -7,14 +7,16 @@ import numpy as np
 class GraphSample:
     """Model-independent node data for one next-day prediction sample."""
 
-    x: np.ndarray
-    y: np.ndarray
-    fire_signal: np.ndarray
-    current_fire_fraction: np.ndarray
-    target_fire_fraction: np.ndarray
-    positions: np.ndarray
-    physics: np.ndarray
-    coverage: np.ndarray
+    x: np.ndarray  # node input features: [nodes, features]
+    y: np.ndarray  # next day fire presence for nodes: [nodes]
+    fire_signal: np.ndarray  # current day fire presence: [nodes]
+    current_fire_fraction: (
+        np.ndarray
+    )  # fraction of node burning on current day: [nodes]
+    target_fire_fraction: np.ndarray  # fraction of node burning on next day: [nodes]
+    positions: np.ndarray  # spatial coordinates of each node [nodes, 2]
+    physics: np.ndarray  # raw physics-related features [nodes, physics_features]
+    coverage: np.ndarray  # # fraction of the cell that contains valid pixels (invalid pixels are the ones added as padding)
     feature_names: tuple[str, ...]
     physics_names: tuple[str, ...]
     grid_shape: tuple[int, int]
@@ -51,11 +53,15 @@ class GraphSample:
 class ShiftOperator:
     """Sparse directed graph shift with S[target, source] = edge_weight."""
 
-    edge_index: np.ndarray
-    edge_weight: np.ndarray
+    edge_index: np.ndarray  # source and target node for each egde: [2, E]
+    edge_weight: np.ndarray  # single weight for each edge: [E]
     number_of_nodes: int
-    edge_attr: np.ndarray | None = None
-    edge_attr_names: tuple[str, ...] = ()
+    edge_attr: np.ndarray | None = (
+        None  # optional additional properties for each edge: [E, D]
+    )
+    edge_attr_names: tuple[
+        str, ...
+    ] = ()  # names corresponding to the columns of `edge_attr`
 
     def __post_init__(self) -> None:
         if self.number_of_nodes < 1:
