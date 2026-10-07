@@ -148,17 +148,9 @@ edge raw weight `1`.
 
 ## Benchmark
 
-All results use the 12-fold protocol of the **WildfireSpreadTS** benchmark ([Gerard et al., NeurIPS 2023](https://papers.neurips.cc/paper_files/paper/2023/file/ebd545176bdaa9cd5d45954947bd74b7-Paper-Datasets_and_Benchmarks.pdf)), so our rows are directly comparable to the published ones.
+We use the 12-fold protocol of the WildfireSpreadTS benchmark ([Gerard et al., 2023](https://papers.neurips.cc/paper_files/paper/2023/file/ebd545176bdaa9cd5d45954947bd74b7-Paper-Datasets_and_Benchmarks.pdf)): year-wise folds over 2018–2021, targets on days 5..T−1, and AP pooled over all 375 m pixels of each test year. Results are reported as mean ± std over the 12 folds.
 
-### Leaderboard
-
-Test AP is the mean ± std over the 12 year-wise folds. **Compare only within a column.**
-
-- **AP (full):** every 375 m pixel of the test images (Gerard et al.).
-- **AP (centre 128):** only each test image's central 128 × 128 pixels. This is where [Lahrichi et al., WACV 2026](https://arxiv.org/abs/2502.12003) evaluate, per their [code](https://github.com/slahrichi/WildfireSpreadTS). That window contains more fire, so APs there are higher.
-- **F1 and IoU:** at probability 0.5, the benchmark convention.
-- **Published rows:** use all features, except those marked "best", which use the best feature set reported.
-- **Ours:** use all features. `Days` is the number of input days.
+**AP (full)** scores the whole test image (Gerard et al.). **AP (centre 128)** scores only each image's central 128 × 128 pixels, which is what [Lahrichi et al., 2026](https://arxiv.org/abs/2502.12003) evaluate. Compare only within a column. F1 and IoU are at probability 0.5.
 
 | Model | Days | Params | Folds | AP (full) | AP (centre 128) | F1 | IoU |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -183,72 +175,12 @@ Test AP is the mean ± std over the 12 year-wise folds. **Compare only within a 
 | **Ours: graph models** | | | | | | | |
 | *to be added* | | | | | | | |
 
-**Rows:**
-- *Gerard* and *Lahrichi* are the published results; see their papers for the training recipes.
-- `persistence`, `logreg`, `mlp` and `cnn` are our fast baselines (`scripts/run_baselines.sh`):
-  - `persistence`: tomorrow's burning fraction of a node is today's.
-  - `logreg`: per-node logistic regression.
-  - `mlp`: per-node MLP.
-  - `cnn`: small U-Net over the node grid.
-- Our graph models are added as their 12-fold runs finish.
-
-**What the baselines show:**
-- **Coarse 1.5 km nodes stay competitive.** The node U-Net (0.388) is above the best published full-image result (UTAE, 0.372), and our per-node logistic regression (0.301–0.310) is above the published pixel-level one (0.286). The training recipes differ too: we use pixel-level BCE and select models by validation AP.
-- **The big gains in Lahrichi et al. likely come from their training recipe, not the smaller test window.** Their centre-128 numbers are ~0.1 higher than Gerard's full-image ones. For our models the centre window adds only ~0.01, which suggests most of their gain comes from focal loss, pretrained encoders and selecting models by validation AP.
-- **F1 and IoU at 0.5 are low for our trained models.** Plain pixel-level BCE gives calibrated, low probabilities. `results/benchmark_runs.jsonl` also stores F1/IoU at the validation-tuned threshold (`test_f1_tuned`, `test_iou_tuned`): mean F1 0.41–0.45.
-
-### Protocol
-
-The protocol was read from the official code ([SebastianGer/WildfireSpreadTS](https://github.com/SebastianGer/WildfireSpreadTS)) and is implemented in `benchmark.py` and `data/patches.py`:
-
-- **Folds:** 12 year-wise folds over 2018–2021 (two training years, one validation year, one test year), in the official order.
-- **Samples:** for every test fire with `T` days, the targets are days 5..T−1. That is 10,572 targets in total, the same for 1-day and 5-day models.
-- **Inputs:** at most the 5 days before the target.
-- **Target:** the next-day active-fire mask at 375 m. A pixel burns if its detection time (hhmm) floor-divided by 100 is > 0, as in the official HDF5 files.
-- **Test pixels:** the whole image, centre-cropped to multiples of 32.
-- **Metric:** exact AP (`torchmetrics.BinaryAveragePrecision`), pooled over all test pixels of the test year. This gives one AP per fold. The reported std is the population std (ddof=0).
-
-**Check:** `uv run python -m graphml_wildfire.benchmark persistence` reproduces the published pixel-level persistence of Gerard et al. (Table 2) to the third decimal:
-
-| Test year | 2018 | 2019 | 2020 | 2021 | 12 folds |
-| --- | --- | --- | --- | --- | --- |
-| This repository | 0.187 | 0.105 | 0.194 | 0.287 | 0.193 ± 0.065 |
-| Gerard et al. | 0.187 | 0.105 | 0.194 | 0.287 | 0.193 ± 0.065 |
-
-### How our models are scored
-
-`data/patches.py` turns every fire into a grid of 4 × 4 pixel nodes (1.5 km):
-
-- Each daily GeoTIFF is centre-cropped exactly like a benchmark test image.
-- The crop is aggregated with `preprocess_image`.
-- Fire-history features are added. They only look at the 5 input days.
-- Per-node counts of the burning pixels the benchmark scores are stored alongside.
-
-A node's score is given to all its pixels. AP computed from these counts equals pixel-level AP exactly (`tests/test_benchmark.py`).
-
-Models are trained with pixel-level BCE, where the target is the fraction of a node's pixels that burn. A 1.5 km node cannot rank the pixels inside it, which costs some AP compared with 375 m models.
-
-### Reproduce and add a model
+Our models predict on 4 × 4 pixel nodes (1.5 km). Each node's score is given to all its pixels, so the metric is exactly the pixel-level one. `benchmark persistence` reproduces Gerard et al.'s persistence AP exactly (0.193 ± 0.065).
 
 ```bash
-uv run python -m graphml_wildfire.data.patches            # data/raw GeoTIFFs -> data/cache/wsts_patch4 (~2 min)
-uv run python -m graphml_wildfire.benchmark persistence   # protocol check (optional)
-scripts/run_baselines.sh                                  # the baselines, 12 folds each (~1 h on one GPU)
-uv run python -m graphml_wildfire.benchmark summary       # prints the leaderboard as markdown
+uv run python -m graphml_wildfire.data.patches            # build the node cache from data/raw
+scripts/run_baselines.sh                                  # baselines, 12 folds each (~1 h)
+uv run python -m graphml_wildfire.benchmark summary       # leaderboard rows as markdown
 ```
 
-To add a model:
-1. Run it on all 12 folds, appending one JSON line per fold to `results/benchmark_runs.jsonl`. `train.py` shows the required fields.
-2. Paste its row from `benchmark summary` into the leaderboard above.
-
-### Not comparable
-
-These papers use WildfireSpreadTS with a different protocol, so their numbers do not belong in the leaderboard:
-
-- **WSTS+** (Lahrichi et al., Table 5): 8 years, 4 folds.
-- **Random event-level 4-fold CV** (Lahrichi et al., Table 8).
-- **WildfireSpreadBench** ([arXiv 2609.22191](https://arxiv.org/abs/2609.22191)): fold 0 only.
-- **Funk** ([arXiv 2605.03148](https://arxiv.org/abs/2605.03148)): fold ensembles, std over 4 years.
-- **Yang et al.** ([arXiv 2603.09042](https://arxiv.org/abs/2603.09042)): leave-one-year-out, scenario subsets, 64 × 64 crops.
-- **Luo et al.** ([arXiv 2602.11672](https://arxiv.org/abs/2602.11672)) and **Meco et al.** ([arXiv 2606.14071](https://arxiv.org/abs/2606.14071)): F1 only, splits not stated.
-- **Chakravarty** ([arXiv 2510.09666](https://arxiv.org/abs/2510.09666)): claims the 12-fold protocol, but its persistence (0.191) does not match the benchmark's.
+To add a model, run it on all 12 folds and write its results to `results/benchmark_runs.jsonl`, then paste its row from `benchmark summary` into the table.
