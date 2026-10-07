@@ -3,7 +3,7 @@ import hashlib
 import random
 from dataclasses import dataclass
 from datetime import date
-from itertools import permutations
+from itertools import combinations, permutations
 from pathlib import Path
 from typing import Iterable
 
@@ -30,19 +30,21 @@ class YearFold:
 def create_year_folds(
     years: Iterable[int] = (2018, 2019, 2020, 2021),
 ) -> list[YearFold]:
-    """Create the 12 ordered two-train, one-validation, one-test folds."""
+    """Create the 12 ordered two-train, one-validation, one-test folds.
+
+    The order matches the official WildfireSpreadTS code (FireSpreadDataModule.split_fires),
+    so fold IDs refer to the same years as in the published papers.
+    """
 
     years = tuple(sorted(years))
     if len(years) != 4 or len(set(years)) != 4:
         raise ValueError("Exactly four distinct years are required")
 
     folds = []
-    for validation_year, test_year in permutations(years, 2):
-        train_years = tuple(
-            year for year in years if year not in (validation_year, test_year)
-        )
-        # Train years will always have exactly two elements
-        folds.append(YearFold(train_years, validation_year, test_year))  # type: ignore
+    for train_years in combinations(years, 2):
+        held_out = [year for year in years if year not in train_years]
+        for validation_year, test_year in permutations(held_out, 2):
+            folds.append(YearFold(train_years, validation_year, test_year))  # type: ignore
     return folds
 
 

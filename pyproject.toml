@@ -15,7 +15,9 @@ dependencies = [
     "rasterio>=1.5.2",
     "remotezip>=0.12.6",
     "requests>=2.34.2",
+    "torch>=2.14.1",
     "tqdm>=4.67.1",
+    "wandb>=0.30.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -24,4 +26,6 @@ where = ["src"]
 [dependency-groups]
 dev = [
     "bpython>=0.26",
+    "pytest>=9.1.1",
+    "scikit-learn>=1.9.1",
 ]
