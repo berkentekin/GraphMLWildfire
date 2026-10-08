@@ -150,21 +150,22 @@ edge raw weight `1`.
 
 We use the 12-fold protocol of the WildfireSpreadTS benchmark ([Gerard et al., 2023](https://papers.neurips.cc/paper_files/paper/2023/file/ebd545176bdaa9cd5d45954947bd74b7-Paper-Datasets_and_Benchmarks.pdf)): year-wise folds over 2018–2021, targets on days 5..T−1, and AP pooled over all 375 m pixels of each test year. Results are reported as mean ± std over the 12 folds.
 
-**AP (full)** scores the whole test image (Gerard et al.). **AP (centre 128)** scores only each image's central 128 × 128 pixels, which is what [Lahrichi et al., 2026](https://arxiv.org/abs/2502.12003) evaluate. Compare only within a column. F1 and IoU are at probability 0.5.
+**AP (full)** scores the whole test image (Gerard et al.). **AP (centre 128)** scores only each image's central 128 × 128 pixels, which is what [Lahrichi et al., 2026](https://arxiv.org/abs/2502.12003v3) evaluate. Compare only within a column. F1 and IoU are at probability 0.5. Veg / Multi / All are the published feature sets; ours use all features.
 
 | Model | Days | Params | Folds | AP (full) | AP (centre 128) | F1 | IoU |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **Published** | | | | | | | |
 | Gerard: persistence | 1 | 0 | 12 | 0.193 ± 0.065 | – | | |
-| Gerard: logistic regression | 1 | 361 | 12 | 0.286 ± 0.092 | – | | |
-| Gerard: Res18 U-Net | 1 | 14.4M | 12 | 0.341 ± 0.086 | – | | |
-| Gerard: Res18 U-Net | 5 | 14.7M | 12 | 0.325 ± 0.108 | – | | |
-| Gerard: ConvLSTM | 5 | 240K | 12 | 0.292 ± 0.094 | – | | |
-| Gerard: UTAE | 5 | 1.1M | 12 | 0.321 ± 0.135 | – | | |
+| Gerard: logistic regression (All) | 1 | 361 | 12 | 0.286 ± 0.092 | – | | |
+| Gerard: Res18 U-Net (All) | 1 | 14.4M | 12 | 0.341 ± 0.086 | – | | |
+| Gerard: Res18 U-Net (All) | 5 | 14.7M | 12 | 0.325 ± 0.108 | – | | |
+| Gerard: ConvLSTM (All) | 5 | 240K | 12 | 0.292 ± 0.094 | – | | |
+| Gerard: UTAE (All) | 5 | 1.1M | 12 | 0.321 ± 0.135 | – | | |
 | Gerard: UTAE (Veg, best) | 5 | 1.1M | 12 | 0.372 ± 0.088 | – | | |
-| Lahrichi: Res18-UNet | 1 | 14.3M | 12 | – | 0.460 ± 0.084 | | |
+| Lahrichi: Res18-UNet (All) | 1 | 14.3M | 12 | – | 0.460 ± 0.084 | | |
 | Lahrichi: Res18-UNet (Multi, best T=1) | 1 | 14.3M | 12 | – | 0.468 ± 0.087 | | |
-| Lahrichi: UTAE(Res18) | 5 | 14.6M | 12 | – | 0.475 ± 0.091 | | |
+| Lahrichi: Res18-UNet, data fusion (Veg) | 5 | 14.4M | 12 | – | 0.472 ± 0.083 | | |
+| Lahrichi: UTAE(Res18) (All) | 5 | 14.6M | 12 | – | 0.475 ± 0.091 | | |
 | Lahrichi: UTAE(Res18) (Veg, best) | 5 | 14.6M | 12 | – | 0.478 ± 0.085 | | |
 | **Ours: baselines (1.5 km nodes, this repository)** | | | | | | | |
 | persistence_w5_p4 | 5 | 0 | 12 | 0.246 ± 0.077 | 0.246 ± 0.068 | 0.381 ± 0.068 | 0.237 ± 0.051 |

@@ -34,18 +34,19 @@ FIRST_INPUT_DAY = 4
 PUBLISHED_PERSISTENCE = {2018: 0.187, 2019: 0.105, 2020: 0.194, 2021: 0.287}
 # Published 12-fold test AP (mean, std) and parameter count, with all features unless marked as the best feature set.
 # "full": Gerard et al. (2023), Table 5, full benchmark crop.
-# "centre128": Lahrichi et al. (WACV 2026), Table 2, centre 128 x 128 crop.
+# "centre128": Lahrichi et al. (WACV 2026; arXiv 2502.12003v3), Table 2, centre 128 x 128 crop.
 PUBLISHED = [
     ("full", "Gerard: persistence", 1, 0.193, 0.065, "0"),
-    ("full", "Gerard: logistic regression", 1, 0.286, 0.092, "361"),
-    ("full", "Gerard: Res18 U-Net", 1, 0.341, 0.086, "14.4M"),
-    ("full", "Gerard: Res18 U-Net", 5, 0.325, 0.108, "14.7M"),
-    ("full", "Gerard: ConvLSTM", 5, 0.292, 0.094, "240K"),
-    ("full", "Gerard: UTAE", 5, 0.321, 0.135, "1.1M"),
+    ("full", "Gerard: logistic regression (All)", 1, 0.286, 0.092, "361"),
+    ("full", "Gerard: Res18 U-Net (All)", 1, 0.341, 0.086, "14.4M"),
+    ("full", "Gerard: Res18 U-Net (All)", 5, 0.325, 0.108, "14.7M"),
+    ("full", "Gerard: ConvLSTM (All)", 5, 0.292, 0.094, "240K"),
+    ("full", "Gerard: UTAE (All)", 5, 0.321, 0.135, "1.1M"),
     ("full", "Gerard: UTAE (Veg, best)", 5, 0.372, 0.088, "1.1M"),
-    ("centre128", "Lahrichi: Res18-UNet", 1, 0.460, 0.084, "14.3M"),
+    ("centre128", "Lahrichi: Res18-UNet (All)", 1, 0.460, 0.084, "14.3M"),
     ("centre128", "Lahrichi: Res18-UNet (Multi, best T=1)", 1, 0.468, 0.087, "14.3M"),
-    ("centre128", "Lahrichi: UTAE(Res18)", 5, 0.475, 0.091, "14.6M"),
+    ("centre128", "Lahrichi: Res18-UNet, data fusion (Veg)", 5, 0.472, 0.083, "14.4M"),
+    ("centre128", "Lahrichi: UTAE(Res18) (All)", 5, 0.475, 0.091, "14.6M"),
     ("centre128", "Lahrichi: UTAE(Res18) (Veg, best)", 5, 0.478, 0.085, "14.6M"),
 ]
 
