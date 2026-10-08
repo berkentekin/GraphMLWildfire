@@ -18,8 +18,7 @@ import torch
 from tqdm import tqdm
 
 from .data.channels import ACTIVE_FIRE_INDEX
-from .data.convert_hdf5 import _date_from_filename
-from .data.patches import benchmark_crop, burning_pixels
+from .data.convert_hdf5 import _date_from_filename, benchmark_crop, burning_pixels
 from .data.splits import create_year_folds
 
 

@@ -22,6 +22,31 @@ from .channels import (
 
 
 DEFAULT_BLOCK_SIZE = 4
+# Side of the centre window on which Lahrichi et al. (WACV 2026) report test AP.
+CENTRE_CROP = 128
+
+
+def burning_pixels(active_fire: np.ndarray) -> np.ndarray:
+    """Active-fire pixels as the WildfireSpreadTS benchmark sees them.
+
+    The official HDF5 conversion floor-divides the detection time (hhmm) by 100 before
+    testing > 0, so detections between 00:00 and 00:59 do not count.
+    """
+
+    return np.nan_to_num(active_fire) >= 100
+
+
+def _centre_crop_start(size: int, crop: int) -> int:
+    # Same rounding as torchvision.transforms.functional.center_crop.
+    return int(round((size - crop) / 2.0))
+
+
+def benchmark_crop(height: int, width: int) -> tuple[slice, slice]:
+    """Rows and columns of a test image kept by the benchmark: a centre crop to multiples of 32."""
+
+    crop_height, crop_width = height // 32 * 32, width // 32 * 32
+    top, left = _centre_crop_start(height, crop_height), _centre_crop_start(width, crop_width)
+    return slice(top, top + crop_height), slice(left, left + crop_width)
 
 
 def _date_from_filename(path: Path) -> date:
@@ -59,6 +84,16 @@ def _block_mean(values: np.ndarray, block_size: int) -> np.ndarray:
     means = np.full(sums.shape, np.nan, dtype=np.float64)
     np.divide(sums, counts, out=means, where=counts > 0)
     return means[0] if squeeze else means
+
+
+def _block_count(values: np.ndarray, block_size: int) -> np.ndarray:
+    """Count true pixels of a boolean map [H, W] in non-overlapping blocks."""
+
+    return np.rint(
+        _block_mean(values.astype(np.float32), block_size)
+        * _coverage(*values.shape, block_size)
+        * block_size**2
+    ).astype(np.uint16)
 
 
 def _coverage(height: int, width: int, block_size: int) -> np.ndarray:
@@ -134,11 +169,13 @@ def preprocess_image(
         elif index != ACTIVE_FIRE_INDEX:
             features.append(_block_mean(values, block_size))
 
-    fire_pixels = np.isfinite(image[ACTIVE_FIRE_INDEX]) & (
-        image[ACTIVE_FIRE_INDEX] > 0
-    )
+    fire_pixels = burning_pixels(image[ACTIVE_FIRE_INDEX])
     fire_fraction = _block_mean(fire_pixels.astype(np.float32), block_size)
     fire_presence = fire_fraction > 0
+    # Mean detection time (hhmm) over the burning pixels of a node, NaN without fire.
+    fire_time = _block_mean(
+        np.where(fire_pixels, image[ACTIVE_FIRE_INDEX], np.nan), block_size
+    )
 
     physics = np.stack(
         [
@@ -165,6 +202,10 @@ def preprocess_image(
         "features": np.stack(features).astype(np.float32),
         "fire_presence": fire_presence.astype(np.uint8),
         "fire_fraction": fire_fraction.astype(np.float32),
+        "fire_pixels": _block_count(fire_pixels, block_size),
+        "fire_time": fire_time.astype(np.float32),
+        "viirs_missing": _block_mean(np.isnan(image[0]).astype(np.float32), block_size).astype(np.float32),
+        "ndvi_missing": _block_mean(np.isnan(image[3]).astype(np.float32), block_size).astype(np.float32),
         "physics": physics.astype(np.float32),
         "coverage": _coverage(height, width, block_size),
         "positions": np.stack(
@@ -173,13 +214,22 @@ def preprocess_image(
     }
 
 
+# Per-day node maps stored next to `fire_presence` and `fire_fraction`.
+_DAILY_MAPS = ("fire_pixels", "fire_time", "viirs_missing", "ndvi_missing", "centre_fire")
+
+
 def convert_fire(
     fire_dir: Path,
     output_path: Path,
     overwrite: bool = False,
     block_size: int = DEFAULT_BLOCK_SIZE,
+    crop: bool = False,
 ) -> bool:
-    """Preprocess one directory of daily GeoTIFFs into one HDF5 file."""
+    """Preprocess one directory of daily GeoTIFFs into one HDF5 file.
+
+    With `crop`, every image is first centre-cropped like a WildfireSpreadTS test image
+    (`benchmark_crop`), so the nodes tile exactly the pixels the benchmark scores.
+    """
 
     images = sorted(fire_dir.glob("*.tif"), key=_date_from_filename)
     if not images:
@@ -192,7 +242,22 @@ def convert_fire(
         first_image = source.read().astype(np.float32)
         source_transform = source.transform
         crs = str(source.crs)
-    first = preprocess_image(first_image, source_transform, block_size)
+    height, width = first_image.shape[1:]
+    rows, columns = benchmark_crop(height, width) if crop else (slice(0, height), slice(0, width))
+    node_source_transform = source_transform * Affine.translation(columns.start, rows.start)
+    # Pixels of the centre CENTRE_CROP x CENTRE_CROP window of the original image.
+    top, left = _centre_crop_start(height, CENTRE_CROP), _centre_crop_start(width, CENTRE_CROP)
+    in_centre = np.zeros((height, width), dtype=bool)
+    in_centre[top : top + CENTRE_CROP, left : left + CENTRE_CROP] = True
+    in_centre = in_centre[rows, columns]
+
+    def process(image: np.ndarray) -> dict[str, np.ndarray]:
+        processed = preprocess_image(image[:, rows, columns], node_source_transform, block_size)
+        burning = burning_pixels(image[ACTIVE_FIRE_INDEX, rows, columns])
+        processed["centre_fire"] = _block_count(burning & in_centre, block_size)
+        return processed
+
+    first = process(first_image)
 
     with h5py.File(output_path, "w") as output:
         node_rows, node_columns = first["fire_presence"].shape
@@ -235,13 +300,28 @@ def convert_fire(
             chunks=(1, min(128, node_rows), min(128, node_columns)),
             compression="lzf",
         )
+        daily = {
+            name: output.create_dataset(
+                name,
+                shape=(len(images), node_rows, node_columns),
+                dtype=first[name].dtype,
+                chunks=(1, min(128, node_rows), min(128, node_columns)),
+                compression="lzf",
+            )
+            for name in _DAILY_MAPS
+        }
         output.create_dataset("coverage", data=first["coverage"], compression="lzf")
+        output.create_dataset(
+            "centre_pixels", data=_block_count(in_centre, block_size), compression="lzf"
+        )
         output.create_dataset("positions", data=first["positions"], compression="lzf")
 
         features[0] = first["features"]
         physics[0] = first["physics"]
         fire_presence[0] = first["fire_presence"]
         fire_fraction[0] = first["fire_fraction"]
+        for name, dataset in daily.items():
+            dataset[0] = first[name]
 
         for index, image_path in enumerate(images[1:], start=1):
             with rasterio.open(image_path) as source:
@@ -250,11 +330,13 @@ def convert_fire(
                     raise ValueError(f"Image shape changed inside fire {fire_dir.name}")
                 if source.transform != source_transform or str(source.crs) != crs:
                     raise ValueError(f"Georeferencing changed inside fire {fire_dir.name}")
-                processed = preprocess_image(image, source_transform, block_size)
+                processed = process(image)
                 features[index] = processed["features"]
                 physics[index] = processed["physics"]
                 fire_presence[index] = processed["fire_presence"]
                 fire_fraction[index] = processed["fire_fraction"]
+                for name, dataset in daily.items():
+                    dataset[index] = processed[name]
 
         dates = [str(_date_from_filename(path)) for path in images]
         string_type = h5py.string_dtype("utf-8")
@@ -264,8 +346,10 @@ def convert_fire(
         output.attrs["img_dates"] = np.asarray(dates, dtype=string_type)
         output.attrs["source_transform"] = tuple(source_transform)
         output.attrs["node_transform"] = tuple(
-            source_transform @ Affine.scale(block_size, block_size)
+            node_source_transform @ Affine.scale(block_size, block_size)
         )
+        output.attrs["benchmark_crop"] = crop
+        output.attrs["crop_offset"] = (rows.start, columns.start)
         output.attrs["crs"] = crs
         output.attrs["block_size"] = block_size
         output.attrs["source_shape"] = first_image.shape[1:]
@@ -285,6 +369,7 @@ def convert_dataset(
     overwrite: bool = False,
     show_progress: bool = True,
     block_size: int = DEFAULT_BLOCK_SIZE,
+    crop: bool = False,
 ) -> list[Path]:
     """Preprocess all downloaded WildfireSpreadTS fires into HDF5."""
 
@@ -314,7 +399,7 @@ def convert_dataset(
     for year_dir, fire_dir in progress:
         progress.set_postfix_str(f"{year_dir.name}/{fire_dir.name}")
         output_path = target_root / year_dir.name / f"{fire_dir.name}.hdf5"
-        if convert_fire(fire_dir, output_path, overwrite, block_size):
+        if convert_fire(fire_dir, output_path, overwrite, block_size, crop):
             converted.append(output_path)
 
     return converted
@@ -331,6 +416,11 @@ def main() -> None:
     parser.add_argument("--years", type=int, nargs="+", default=None)
     parser.add_argument("--block-size", type=int, default=DEFAULT_BLOCK_SIZE)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--benchmark-crop",
+        action="store_true",
+        help="Centre-crop every image like a WildfireSpreadTS test image",
+    )
     args = parser.parse_args()
 
     converted = convert_dataset(
@@ -339,6 +429,7 @@ def main() -> None:
         args.years,
         args.overwrite,
         block_size=args.block_size,
+        crop=args.benchmark_crop,
     )
     print(f"Created {len(converted)} HDF5 files")
 

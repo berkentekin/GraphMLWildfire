@@ -60,7 +60,7 @@ class TrainConfig:
         if not 1 <= self.window <= FIRST_INPUT_DAY + 1:
             raise ValueError(f"window must be between 1 and {FIRST_INPUT_DAY + 1}")
         if not self.cache_dir:
-            self.cache_dir = f"data/cache/wsts_patch{self.patch}"
+            self.cache_dir = f"data/processed/wildfirespreadts_benchmark_b{self.patch}"
         if not self.experiment_name:
             self.experiment_name = f"{self.model}_w{self.window}_p{self.patch}"
         if not self.experiment_name.strip():

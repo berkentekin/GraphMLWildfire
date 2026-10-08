@@ -44,6 +44,16 @@ uv run python -m graphml_wildfire.data.convert_hdf5 \
 
 The node side length is `block size x 375 m`.
 
+For the [benchmark](#benchmark), add `--benchmark-crop` to centre-crop every image
+like a WildfireSpreadTS test image, so the nodes tile exactly the scored pixels:
+
+```bash
+uv run python -m graphml_wildfire.data.convert_hdf5 \
+  data/raw/wildfirespreadts \
+  data/processed/wildfirespreadts_benchmark_b4 \
+  --benchmark-crop
+```
+
 Each HDF5 file contains all days for one fire. It stores aggregated model
 features, land-cover proportions, fire presence and fraction, raw physics
 features, coverage, positions, dates, and geospatial metadata.
@@ -57,11 +67,18 @@ grid dimensions.
 | `physics` | `[D, 7, R, C]` | `float32` | Wind speed and direction, forecast wind speed and direction, elevation, slope, and aspect in their original units. |
 | `fire_presence` | `[D, R, C]` | `uint8` | Binary indicator that at least one pixel in the node contains an active-fire detection. |
 | `fire_fraction` | `[D, R, C]` | `float32` | Proportion of the node's real pixels containing an active-fire detection. |
+| `fire_pixels` | `[D, R, C]` | `uint16` | Number of the node's pixels containing an active-fire detection. |
+| `fire_time` | `[D, R, C]` | `float32` | Mean detection time (hhmm) of the node's burning pixels, NaN without fire. |
+| `viirs_missing`, `ndvi_missing` | `[D, R, C]` | `float32` | Fraction of the node's pixels where VIIRS M11 or NDVI is missing. |
+| `centre_pixels`, `centre_fire` | `[R, C]`, `[D, R, C]` | `uint16` | Number of the node's pixels, and of its burning pixels, inside the central 128 x 128 window of the original image. |
 | `coverage` | `[R, C]` | `float32` | Fraction of a complete block covered by real raster pixels. Partial border nodes have values below one. |
 | `positions` | `[2, R, C]` | `float64` | `x` and `y` coordinates of each node center. |
 
+A pixel counts as an active-fire detection if its detection time is at least 01:00,
+as in the official WildfireSpreadTS HDF5 files (`burning_pixels`).
+
 File attributes store the year, fire ID, dates, CRS, transforms, block size,
-original raster shape, and channel names.
+original raster shape, crop, and channel names.
 
 ## Select Fires
 
@@ -179,7 +196,8 @@ We use the 12-fold protocol of the WildfireSpreadTS benchmark ([Gerard et al., 2
 Our models predict on 4 × 4 pixel nodes (1.5 km). Each node's score is given to all its pixels, so the metric is exactly the pixel-level one. `benchmark persistence` reproduces Gerard et al.'s persistence AP exactly (0.193 ± 0.065).
 
 ```bash
-uv run python -m graphml_wildfire.data.patches            # build the node cache from data/raw
+uv run python -m graphml_wildfire.data.convert_hdf5 data/raw/wildfirespreadts \
+  data/processed/wildfirespreadts_benchmark_b4 --benchmark-crop   # see Preprocess
 scripts/run_baselines.sh                                  # baselines, 12 folds each (~1 h)
 uv run python -m graphml_wildfire.benchmark summary       # leaderboard rows as markdown
 ```
