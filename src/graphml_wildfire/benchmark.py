@@ -35,6 +35,11 @@ PUBLISHED_PERSISTENCE = {2018: 0.187, 2019: 0.105, 2020: 0.194, 2021: 0.287}
 # Published 12-fold test AP (mean, std) and parameter count, with all features unless marked as the best feature set.
 # "full": Gerard et al. (2023), Table 5, full benchmark crop.
 # "centre128": Lahrichi et al. (WACV 2026; arXiv 2502.12003v3), Table 2, centre 128 x 128 crop.
+# Papers the published rows come from, linked in the leaderboard.
+SOURCES = {
+    "Gerard": "https://papers.neurips.cc/paper_files/paper/2023/file/ebd545176bdaa9cd5d45954947bd74b7-Paper-Datasets_and_Benchmarks.pdf",
+    "Lahrichi": "https://arxiv.org/abs/2502.12003v3",
+}
 PUBLISHED = [
     ("full", "Gerard: persistence", 1, 0.193, 0.065, "0"),
     ("full", "Gerard: logistic regression (All)", 1, 0.286, 0.092, "361"),
@@ -132,7 +137,8 @@ def summary(results_file: str | Path) -> None:
     print("| --- | --- | --- | --- | --- | --- | --- | --- |")
     for region, name, days, mean, std, params in PUBLISHED:
         cells = [f"{mean:.3f} ± {std:.3f}" if region == column else "–" for column in ("full", "centre128")]
-        print(f"| {name} | {days} | {params} | 12 | {cells[0]} | {cells[1]} | | |")
+        source, model = name.split(": ", 1)
+        print(f"| [{source}]({SOURCES[source]}): {model} | {days} | {params} | 12 | {cells[0]} | {cells[1]} | | |")
     for name, by_fold in runs.items():
         first = next(iter(by_fold.values()))
         cells = []
