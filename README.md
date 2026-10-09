@@ -234,3 +234,43 @@ uv run python -m graphml_wildfire.benchmark summary       # leaderboard rows as 
 ```
 
 To add a model, run it on all 12 folds writing one record per fold to `results/benchmark_runs.jsonl` with `test_ap_centre128`, `test_f1` and `test_iou` computed as in `train.run` (from a `centre_input=True` pass), then paste its row from `benchmark summary` into the table.
+
+## Pixel-graph-time CNN
+
+The model behind our best result: a graph-time convolutional network on a grid of 0.75 km nodes whose spatial shift operator is produced by attention, wrapped in a 375 m pixel encoder and decoder.
+
+```
+pixels [B, 5 days, 3, 2H, 2W]  (fire mask, detection time, NDVI at 375 m)
+  │ pixel encoder: conv 3×3 → GELU → conv 3×3 → GELU (16 ch)
+  │ avg-pool 2×2 → nodes, concat with the 49 node channels → 1×1 conv → 64
+  ▼
+4 × graph-time layer:
+  S_t  = attention over the 8 neighbours, from the node states and the edge geometry
+         (wind alignment and speed, slope), one operator per node, day and layer
+  S_x  = s₀₀ I + s₀₁ (I⊗S_t) + s₁₀ (S_T⊗I) + s₁₁ (S_T⊗S_{t−1}),  S_T: day t ← day t−1
+  X   ← X + GELU(NodeNorm( Σ_{k=0..3} H_k S_xᵏ X ))
+  ▼
+last day's node states → nearest upsample ×2 → concat with the pixel features
+  │ decoder: conv 3×3 → GELU → 1×1 conv
+  ▼
+one logit per 375 m pixel for the next day
+```
+
+- `graphs/stencil.py`: shift operators stored as 8 weights per node (one per neighbour), applied as a stencil with a hand-written backward pass.
+- `models/gtcnn.py`: the graph-time CNN of Isufi & Mazzola (2021) with a learned product-graph mix, and the shift operators it can use (`grid`, `physics`, `physics_avg`, `physics_learned`, `learned`, `attention`). Only `attention` builds S from the node states.
+- `models/pixel.py`: the pixel encoder/decoder around it.
+- `data/pixels.py`: the 375 m inputs and targets, cached per fire from the raw GeoTIFFs.
+
+121K parameters, trained from scratch with pixel-level BCE; see `train.py` for the recipe (AdamW, one-cycle, 30 epochs, random 24 km crops with flips and transposes, best epoch by validation AP).
+
+### Reproduce
+
+```bash
+uv run python -m graphml_wildfire.data.convert_hdf5 data/raw/wildfirespreadts \
+  data/processed/wildfirespreadts_benchmark_b2 --benchmark-crop --block-size 2   # 0.75 km nodes
+uv run python -m graphml_wildfire.data.pixels                                     # 375 m cache, ~1 min
+scripts/run_pixel_gtcnn.sh                                                        # 12 folds, ~31 min each
+uv run python -m graphml_wildfire.benchmark summary
+```
+
+Each fold needs ~12 GB of GPU memory and ~45 GB of host memory (the datasets are held in memory). `scripts/run_pixel_gtcnn.sh --model gtcnn` runs the node-only ablation. Checkpoints are written to `data/checkpoints/`; `python -m graphml_wildfire.evaluate <checkpoints>` re-scores them under the protocol.
