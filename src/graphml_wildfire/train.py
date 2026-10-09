@@ -94,6 +94,9 @@ class FireData:
         del sample
 
         self.fires, self.targets, self.samples = [], [], {"train": [], "val": [], "test": []}
+        # Smallest node-aligned window containing the centre 128 x 128 pixels of every fire: the
+        # model input of the Lahrichi et al. protocol (see benchmark.py).
+        self.centre_windows = []
         split_of = {train_a: "train", train_b: "train", val_year: "val", test_year: "test"}
         for year in YEARS:
             for arrays in load_patch_cache(config.cache_dir, [year]).values():
@@ -105,6 +108,8 @@ class FireData:
                 })
                 index = len(self.fires) - 1
                 self.samples[split_of[year]] += [(index, day) for day in range(FIRST_INPUT_DAY, len(fire) - 1)]
+                rows, cols = (torch.nonzero(self.targets[index]["centre_pixels"].sum(dim=axis) > 0).flatten() for axis in (1, 0))
+                self.centre_windows.append((int(rows[0]), int(cols[0]), int(rows[-1] - rows[0] + 1), int(cols[-1] - cols[0] + 1)))
         burning = sum(float(self.targets[index]["fire_pixels"][day + 1].sum()) for index, day in self.samples["train"])
         pixels = sum(self.fires[index][0, 0].numel() * self.node_pixels for index, _ in self.samples["train"])
         self.fire_rate = burning / pixels
@@ -115,6 +120,7 @@ class FireData:
         device: torch.device,
         crop: int = 0,
         generator: torch.Generator | None = None,
+        centre_input: bool = False,
     ):
         """Return features [B, T, C, H, W] (NaN where missing), valid [B, H, W], target [B, H, W]
         and the pixel counts of every evaluation region.
@@ -122,7 +128,8 @@ class FireData:
         The target is the fraction of a node's pixels that burn the next day. `regions` maps
         "full" (the benchmark crop) and "centre" (its central 128 x 128 pixels) to the number of
         burning pixels and of all pixels of every node in that region, both [B, H, W].
-        With `crop`, every sample is a random crop x crop window placed around its fire.
+        With `crop`, every sample is a random crop x crop window placed around its fire. With
+        `centre_input`, the model only sees the nodes covering the centre 128 x 128 pixels.
         """
 
         fire_channel, burned_channel = CHANNEL_INDEX["fire_frac"], CHANNEL_INDEX["burned_ever"]
@@ -130,7 +137,9 @@ class FireData:
         for index, day in samples:
             height, width = self.fires[index].shape[2:]
             top = left = 0
-            if crop:
+            if centre_input:
+                top, left, height, width = self.centre_windows[index]
+            elif crop:
                 fire = self.fires[index]
                 burning = torch.nonzero((fire[day, burned_channel] > 0) | (fire[day + 1, fire_channel] > 0))
                 jitter = torch.randint(-crop // 4, crop // 4 + 1, (2,), generator=generator)
@@ -199,7 +208,7 @@ def init_output_bias(model: nn.Module, rate: float) -> None:
 
 
 @torch.no_grad()
-def predict(model: nn.Module, data: FireData, split: str, config: TrainConfig, device: torch.device, stride: int = 1):
+def predict(model: nn.Module, data: FireData, split: str, config: TrainConfig, device: torch.device, stride: int = 1, centre_input: bool = False):
     """Logits of every real node in a split (or every `stride`-th sample) and, for every
     evaluation region, the burning and total pixel counts of those nodes; all flat tensors."""
 
@@ -207,7 +216,7 @@ def predict(model: nn.Module, data: FireData, split: str, config: TrainConfig, d
     scores, counts = [], []
     samples = data.samples[split][::stride]
     for start in range(0, len(samples), config.batch_size):
-        features, valid, _, regions = data.batch(samples[start : start + config.batch_size], device)
+        features, valid, _, regions = data.batch(samples[start : start + config.batch_size], device, centre_input=centre_input)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
             logits = model(torch.nan_to_num(features))
         keep = valid > 0
@@ -276,6 +285,7 @@ def run(config: TrainConfig) -> dict:
 
     val_scores, val_regions = predict(model, data, "val", config, device)
     test_scores, test_regions = predict(model, data, "test", config, device)
+    centre_scores, centre_regions = predict(model, data, "test", config, device, centre_input=True)
     threshold = best_f1_threshold(val_scores, *val_regions["full"])
     result = {
         "run_name": config.run_name,
@@ -283,10 +293,12 @@ def run(config: TrainConfig) -> dict:
         "parameters": parameters,
         "best_epoch": best["epoch"],
         "val_ap": average_precision(val_scores, *val_regions["full"]),
-        # Gerard et al. (2023): all pixels of the benchmark crop.
+        # Gerard et al. (2023): whole image in, all pixels of the benchmark crop scored.
         "test_ap": average_precision(test_scores, *test_regions["full"]),
-        # Lahrichi et al. (2026): the central 128 x 128 pixels only.
-        "test_ap_centre128": average_precision(test_scores, *test_regions["centre"]),
+        # Lahrichi et al. (2026): only the centre 128 x 128 window in, and scored.
+        "test_ap_centre128": average_precision(centre_scores, *centre_regions["centre"]),
+        # Diagnostic: the centre window scored from the whole-image pass (not a published protocol).
+        "test_ap_centre128_full_input": average_precision(test_scores, *test_regions["centre"]),
         # Benchmark convention: probability >= 0.5.
         **{f"test_{name}": value for name, value in threshold_metrics(test_scores, *test_regions["full"], 0.0).items()},
         # Threshold that maximises F1 on the validation year.

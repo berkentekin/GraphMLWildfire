@@ -1,8 +1,16 @@
-"""The WildfireSpreadTS benchmark protocol (Gerard et al., NeurIPS 2023), its metrics and checks.
+"""The WildfireSpreadTS test protocols, their metrics and checks.
 
-Every 375 m pixel of the centre-cropped test images is scored, and AP is pooled over all pixels
-of the test year: one AP per fold, reported as mean +- std over the 12 folds.
+Both published protocols share the 12 year-wise folds, the test samples (target days 5..T-1 of
+every test fire) and the metric: exact average precision pooled over every 375 m pixel of the test
+year, one value per fold. They differ in which pixels are used:
 
+* Gerard et al. (NeurIPS 2023): the whole image, centre-cropped to multiples of 32, is both the
+  model input and the scored region. Reported as mean +- population std (ddof=0) over the folds.
+* Lahrichi et al. (WACV 2026, the 0.478 state of the art): only the centre 128 x 128 pixels of the
+  image are fed to the model and scored (torchvision `center_crop` rounding). Reported as mean
+  +- sample std (ddof=1) over the folds; their per-fold values are in LAHRICHI_UTAE_RES18_VEG.
+
+    uv run python -m graphml_wildfire.benchmark verify        # metric and window checks for reviewers
     uv run python -m graphml_wildfire.benchmark persistence   # reproduce Gerard et al., Table 2
     uv run python -m graphml_wildfire.benchmark summary       # mean +- std over folds per experiment
 """
@@ -18,7 +26,7 @@ import torch
 from tqdm import tqdm
 
 from .data.channels import ACTIVE_FIRE_INDEX
-from .data.convert_hdf5 import _date_from_filename, benchmark_crop, burning_pixels
+from .data.convert_hdf5 import CENTRE_CROP, _centre_crop_start, _date_from_filename, benchmark_crop, burning_pixels
 from .data.splits import create_year_folds
 
 
@@ -31,6 +39,12 @@ FIRST_INPUT_DAY = 4
 
 # Pixel-level persistence AP per test year, Gerard et al. (2023), Table 2.
 PUBLISHED_PERSISTENCE = {2018: 0.187, 2019: 0.105, 2020: 0.194, 2021: 0.287}
+# Per-fold centre-128 AP of the state of the art, UTAE(Res18) with Veg features, from the names of
+# the released checkpoints (huggingface.co/saadlahrichi/WSTSPlus, Res18UTAE_T5/Veg/fold<k>_testAP<ap>.pth).
+# Their published 0.478 +- 0.085 is the mean and sample std (ddof=1) of these values.
+LAHRICHI_UTAE_RES18_VEG = [0.523, 0.443, 0.590, 0.345, 0.501, 0.348, 0.584, 0.507, 0.506, 0.512, 0.359, 0.516]
+# Std convention of each leaderboard column, matching the paper the column is compared with.
+STD_DDOF = {"test_ap": 0, "test_ap_centre128": 1, "test_f1": 1, "test_iou": 1}
 # Published 12-fold test AP (mean, std) and parameter count, with all features unless marked as the best feature set.
 # "full": Gerard et al. (2023), Table 5, full benchmark crop.
 # "centre128": Lahrichi et al. (WACV 2026; arXiv 2502.12003v3), Table 2, centre 128 x 128 crop.
@@ -123,10 +137,7 @@ def pixel_persistence_ap(raw_dir: str | Path, year: int) -> float:
 
 def summary(results_file: str | Path) -> None:
     """Print a markdown leaderboard: the published results, then every experiment in `results_file`
-    as mean ± std over its folds.
-
-    The std is the population std (ddof=0), which is what the published tables use.
-    """
+    as mean ± std over its folds (std conventions per column in STD_DDOF)."""
 
     runs = defaultdict(dict)
     for line in Path(results_file).read_text().splitlines():
@@ -143,18 +154,52 @@ def summary(results_file: str | Path) -> None:
         cells = []
         for metric in ("test_ap", "test_ap_centre128", "test_f1", "test_iou"):
             values = np.array([run[metric] for run in by_fold.values()])
-            cells.append(f"{values.mean():.3f} ± {values.std():.3f}")
+            std = values.std(ddof=STD_DDOF[metric]) if len(values) > 1 else 0.0
+            cells.append(f"{values.mean():.3f} ± {std:.3f}")
         print(f"| {name} | {first['window']} | {first['parameters']:,} | {len(by_fold)} | " + " | ".join(cells) + " |")
+
+
+def verify() -> None:
+    """Checks a reviewer can run in seconds: our AP against torchmetrics' (the metric of both papers),
+    the centre window against torchvision's `center_crop`, and the published std conventions."""
+
+    generator = torch.Generator().manual_seed(0)
+    scores = torch.randint(0, 50, (200_000,), generator=generator).float() / 7 - 3
+    targets = (torch.rand(200_000, generator=generator) < torch.sigmoid(scores - 2)).long()
+    try:
+        from torchmetrics.classification import BinaryAveragePrecision
+        reference = float(BinaryAveragePrecision()(scores, targets))
+        print(f"AP vs torchmetrics.BinaryAveragePrecision: ours {average_precision(scores, targets):.8f}, theirs {reference:.8f}")
+    except ImportError:
+        print("torchmetrics not installed: run with `uv run --with torchmetrics` to compare the AP implementations")
+    try:
+        import torchvision.transforms.functional as TF
+        image = torch.arange(300 * 250, dtype=torch.float32).reshape(1, 300, 250)
+        crop = TF.center_crop(image, [CENTRE_CROP, CENTRE_CROP])
+        top, left = _centre_crop_start(300, CENTRE_CROP), _centre_crop_start(250, CENTRE_CROP)
+        print("centre window vs torchvision center_crop (300 x 250 image):",
+              "identical" if torch.equal(crop, image[:, top : top + CENTRE_CROP, left : left + CENTRE_CROP]) else "DIFFERENT")
+    except ImportError:
+        print("torchvision not installed: run with `uv run --with torchvision` to compare the centre window")
+    folds = np.array(LAHRICHI_UTAE_RES18_VEG)
+    print(f"Lahrichi UTAE(Res18) Veg per-fold values: mean {folds.mean():.3f}, std ddof=1 {folds.std(ddof=1):.3f}, "
+          f"ddof=0 {folds.std():.3f} (published 0.478 ± 0.085)")
+    persistence = np.array([PUBLISHED_PERSISTENCE[fold.test_year] for fold in FOLDS])
+    print(f"Gerard persistence per-fold values: mean {persistence.mean():.3f}, std ddof=0 {persistence.std():.3f}, "
+          f"ddof=1 {persistence.std(ddof=1):.3f} (published 0.193 ± 0.065)")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["persistence", "summary"])
+    parser.add_argument("command", choices=["verify", "persistence", "summary"])
     parser.add_argument("--raw-dir", default="data/raw/wildfirespreadts")
     parser.add_argument("--results-file", default="results/benchmark_runs.jsonl")
     args = parser.parse_args()
     if args.command == "summary":
         summary(args.results_file)
+        return
+    if args.command == "verify":
+        verify()
         return
     per_year = {year: pixel_persistence_ap(args.raw_dir, year) for year in YEARS}
     for year, value in per_year.items():
