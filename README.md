@@ -247,7 +247,7 @@ To add a model, run it on all 12 folds writing one record per fold to `results/b
 
 ### Graph VAR
 
-`gvar` is the graph polynomial VAR of [Isufi et al., 2019](https://arxiv.org/abs/1810.08581), eq. (13). It predicts tomorrow's burning fraction of every node as `Σₚ Σₖ ψ[p, k] Sᵏ x[t+1−p]`: the burning fractions `x` of the last `window` days, each filtered over up to `hops` hops of the shift operator `S` of the current day. The `window × (hops + 1)` coefficients are shared by all nodes, days and fires and are fitted by least squares on the training years. The fit is closed-form, so one call runs all 12 folds in seconds:
+`gvar` adapts the graph polynomial VAR (GP-VAR) of [Isufi et al., 2019](https://arxiv.org/abs/1810.08581), eq. (13). It predicts tomorrow's burning fraction of every node as `Σₚ Σₖ ψ[p, k] Sᵏ x[t+1−p]`: the burning fractions `x` of the last `window` days, each filtered over up to `hops` hops of the shift operator `S` of the current day. The article writes this recursion with powers of the Laplacian of one fixed undirected graph and one polynomial order per lag; here the powers are of `S`, which may be directed and change daily, and all lags share `hops`. The `window × (hops + 1)` coefficients are shared by all nodes, days and fires and are fitted by least squares on the training years. The fit is closed-form, so one call runs all 12 folds in seconds:
 
 ```bash
 uv run python -m graphml_wildfire.train_graph_var --shift grid --window 5 --hops 2

@@ -1,12 +1,21 @@
-"""Graph VAR forecasting: the graph polynomial VAR (GP-VAR) of Isufi et al. (2019), eq. (13).
+"""Graph VAR forecasting, adapted from the graph polynomial VAR (GP-VAR) of Isufi et al. (2019).
 
-Tomorrow's fire signal is a sum of polynomial graph filters applied to the last `window` days,
+The GP-VAR, eq. (13) of the article, models a signal on one fixed undirected graph as
 
-    x[t+1] = sum_{p=1..window} sum_{k=0..hops} psi[p-1, k] * S_t^k x[t+1-p],
+    x[t] = -sum_{p=1..P} sum_{l=0..L_p} psi[l, p] * L^l x[t-p] + noise,
 
-where S_t is the shift operator of day t, so the graph may change from day to day. The
+with L the graph Laplacian, and finds the scalars psi by minimising the prediction MSE, eq. (21).
+This module keeps that recursion and the least-squares fit, and predicts
+
+    x[t+1] = sum_{p=1..window} sum_{k=0..hops} psi[p-1, k] * S_t^k x[t+1-p].
+
+It departs from the article as follows. The powers are of a shift operator S instead of the
+Laplacian, and S_t is the operator of day t, so the graph may be directed and change from day to
+day. All lags share the polynomial order `hops`, and psi has the opposite sign. The
 window * (hops + 1) scalars psi are shared by all nodes, days and fires, and minimise the squared
-one-step prediction error on the training samples.
+one-step error summed over the training samples; the article poses the same objective through
+autocorrelation matrices, eq. (20), which need a single fixed graph. The signal mean is not
+subtracted.
 """
 
 import numpy as np

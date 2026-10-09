@@ -23,8 +23,9 @@ def spectral_norm(shift: ShiftOperator) -> float:
     matrix = to_sparse(shift)
     if shift.number_of_nodes <= 64:
         return float(np.linalg.norm(matrix.toarray(), 2))
-    # A fixed start vector keeps ARPACK deterministic.
-    start = np.ones(shift.number_of_nodes)
+    # A fixed start vector keeps ARPACK deterministic. It is random because ARPACK cannot
+    # start from a vector in the null space of S, such as all ones for a Laplacian.
+    start = np.random.default_rng(0).standard_normal(shift.number_of_nodes)
     return float(svds(matrix, k=1, v0=start, return_singular_vectors=False)[0])
 
 
