@@ -299,10 +299,10 @@ def run(config: TrainConfig) -> dict:
         "test_ap_centre128": average_precision(centre_scores, *centre_regions["centre"]),
         # Diagnostic: the centre window scored from the whole-image pass (not a published protocol).
         "test_ap_centre128_full_input": average_precision(test_scores, *test_regions["centre"]),
-        # Benchmark convention: probability >= 0.5.
-        **{f"test_{name}": value for name, value in threshold_metrics(test_scores, *test_regions["full"], 0.0).items()},
-        # Threshold that maximises F1 on the validation year.
-        **{f"test_{name}_tuned": value for name, value in threshold_metrics(test_scores, *test_regions["full"], threshold).items()},
+        # F1 / IoU at probability 0.5 on the centre window, as their code logs them.
+        **{f"test_{name}": value for name, value in threshold_metrics(centre_scores, *centre_regions["centre"], 0.0).items()},
+        # Same, at the threshold that maximises F1 on the validation year (not a published number).
+        **{f"test_{name}_tuned": value for name, value in threshold_metrics(centre_scores, *centre_regions["centre"], threshold).items()},
         "minutes": (time.time() - started) / 60,
     }
     wandb.summary.update({key: value for key, value in result.items() if key.startswith(("val_", "test_", "best_"))})

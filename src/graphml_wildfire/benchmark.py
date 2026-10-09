@@ -45,28 +45,24 @@ PUBLISHED_PERSISTENCE = {2018: 0.187, 2019: 0.105, 2020: 0.194, 2021: 0.287}
 LAHRICHI_UTAE_RES18_VEG = [0.523, 0.443, 0.590, 0.345, 0.501, 0.348, 0.584, 0.507, 0.506, 0.512, 0.359, 0.516]
 # Std convention of each leaderboard column, matching the paper the column is compared with.
 STD_DDOF = {"test_ap": 0, "test_ap_centre128": 1, "test_f1": 1, "test_iou": 1}
-# Published 12-fold test AP (mean, std) and parameter count, with all features unless marked as the best feature set.
-# "full": Gerard et al. (2023), Table 5, full benchmark crop.
-# "centre128": Lahrichi et al. (WACV 2026; arXiv 2502.12003v3), Table 2, centre 128 x 128 crop.
-# Papers the published rows come from, linked in the leaderboard.
-SOURCES = {
-    "Gerard": "https://papers.neurips.cc/paper_files/paper/2023/file/ebd545176bdaa9cd5d45954947bd74b7-Paper-Datasets_and_Benchmarks.pdf",
-    "Lahrichi": "https://arxiv.org/abs/2502.12003v3",
-}
+# Lahrichi et al. (WACV 2026; arXiv 2502.12003v3), Table 2: 12-fold test AP (mean, sample std) on the
+# centre 128 x 128 window, with the feature set of each entry. Veg = fire mask + VIIRS bands + NDVI/EVI2,
+# Multi = Veg + land cover, topography, weather; All = all 23 channels.
 PUBLISHED = [
-    ("full", "Gerard: persistence", 1, 0.193, 0.065, "0"),
-    ("full", "Gerard: logistic regression (All)", 1, 0.286, 0.092, "361"),
-    ("full", "Gerard: Res18 U-Net (All)", 1, 0.341, 0.086, "14.4M"),
-    ("full", "Gerard: Res18 U-Net (All)", 5, 0.325, 0.108, "14.7M"),
-    ("full", "Gerard: ConvLSTM (All)", 5, 0.292, 0.094, "240K"),
-    ("full", "Gerard: UTAE (All)", 5, 0.321, 0.135, "1.1M"),
-    ("full", "Gerard: UTAE (Veg, best)", 5, 0.372, 0.088, "1.1M"),
-    ("centre128", "Lahrichi: Res18-UNet (All)", 1, 0.460, 0.084, "14.3M"),
-    ("centre128", "Lahrichi: Res18-UNet (Multi, best T=1)", 1, 0.468, 0.087, "14.3M"),
-    ("centre128", "Lahrichi: Res18-UNet, data fusion (Veg)", 5, 0.472, 0.083, "14.4M"),
-    ("centre128", "Lahrichi: UTAE(Res18) (All)", 5, 0.475, 0.091, "14.6M"),
-    ("centre128", "Lahrichi: UTAE(Res18) (Veg, best)", 5, 0.478, 0.085, "14.6M"),
+    ("Res18-UNet", 1, "Veg", 0.455, 0.090, "14.3M"),
+    ("Res18-UNet", 1, "Multi", 0.468, 0.087, "14.3M"),
+    ("Res18-UNet", 1, "All", 0.460, 0.084, "14.3M"),
+    ("Res50-UNet", 1, "Multi", 0.459, 0.090, "32.5M"),
+    ("SwinUnet", 1, "Multi", 0.437, 0.082, "27.2M"),
+    ("SegFormer-B2", 1, "Multi", 0.436, 0.083, "27.5M"),
+    ("Res18-UNet, data-level fusion", 5, "Veg", 0.472, 0.083, "14.4M"),
+    ("SwinUnet, data-level fusion", 5, "Multi", 0.453, 0.083, "27.3M"),
+    ("SegFormer, data-level fusion", 5, "Multi", 0.439, 0.081, "27.7M"),
+    ("UTAE", 5, "Multi", 0.459, 0.088, "1.1M"),
+    ("UTAE(Res18)", 5, "Veg", 0.478, 0.085, "14.6M"),
+    ("UTAE(Res18)", 5, "All", 0.475, 0.091, "14.6M"),
 ]
+LAHRICHI_URL = "https://arxiv.org/abs/2502.12003v3"
 
 
 def average_precision(scores: torch.Tensor, positives: torch.Tensor, totals: torch.Tensor | None = None) -> float:
@@ -136,27 +132,26 @@ def pixel_persistence_ap(raw_dir: str | Path, year: int) -> float:
 
 
 def summary(results_file: str | Path) -> None:
-    """Print a markdown leaderboard: the published results, then every experiment in `results_file`
-    as mean ± std over its folds (std conventions per column in STD_DDOF)."""
+    """Print a markdown leaderboard under the Lahrichi et al. protocol: their Table 2, then every
+    experiment in `results_file` as mean ± sample std over its folds."""
 
     runs = defaultdict(dict)
-    for line in Path(results_file).read_text().splitlines():
-        run = json.loads(line)
-        runs[run["experiment_name"]][(run["fold"], run["seed"])] = run
-    print("| Model | Days | Params | Folds | AP (full) | AP (centre 128) | F1 | IoU |")
+    if Path(results_file).exists():
+        for line in Path(results_file).read_text().splitlines():
+            run = json.loads(line)
+            runs[run["experiment_name"]][(run["fold"], run["seed"])] = run
+    print("| Model | Days | Features | Params | Folds | AP (centre 128) | F1 | IoU |")
     print("| --- | --- | --- | --- | --- | --- | --- | --- |")
-    for region, name, days, mean, std, params in PUBLISHED:
-        cells = [f"{mean:.3f} ± {std:.3f}" if region == column else "–" for column in ("full", "centre128")]
-        source, model = name.split(": ", 1)
-        print(f"| [{source}]({SOURCES[source]}): {model} | {days} | {params} | 12 | {cells[0]} | {cells[1]} | | |")
+    for name, days, features, mean, std, params in PUBLISHED:
+        print(f"| [Lahrichi]({LAHRICHI_URL}): {name} | {days} | {features} | {params} | 12 | {mean:.3f} ± {std:.3f} | | |")
     for name, by_fold in runs.items():
         first = next(iter(by_fold.values()))
         cells = []
-        for metric in ("test_ap", "test_ap_centre128", "test_f1", "test_iou"):
+        for metric in ("test_ap_centre128", "test_f1", "test_iou"):
             values = np.array([run[metric] for run in by_fold.values()])
             std = values.std(ddof=STD_DDOF[metric]) if len(values) > 1 else 0.0
             cells.append(f"{values.mean():.3f} ± {std:.3f}")
-        print(f"| {name} | {first['window']} | {first['parameters']:,} | {len(by_fold)} | " + " | ".join(cells) + " |")
+        print(f"| {name} | {first['window']} | all | {first['parameters']:,} | {len(by_fold)} | " + " | ".join(cells) + " |")
 
 
 def verify() -> None:

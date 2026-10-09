@@ -165,7 +165,7 @@ edge raw weight `1`.
 
 ## Benchmark
 
-Our models are scored under the test protocol of the current state of the art, [Lahrichi et al., WACV 2026](https://arxiv.org/abs/2502.12003v3) (UTAE(Res18), 0.478 ± 0.085), reproduced one-to-one from their code ([slahrichi/WildfireSpreadTS](https://github.com/slahrichi/WildfireSpreadTS) at commit `ed221d4`). The original protocol of [Gerard et al., NeurIPS 2023](https://papers.neurips.cc/paper_files/paper/2023/file/ebd545176bdaa9cd5d45954947bd74b7-Paper-Datasets_and_Benchmarks.pdf) is kept as a second column; the two differ only in which pixels the model sees and is scored on.
+Our models are scored under the test protocol of the current state of the art, [Lahrichi et al., WACV 2026](https://arxiv.org/abs/2502.12003v3) (UTAE(Res18), 0.478 ± 0.085), reproduced one-to-one from their code ([slahrichi/WildfireSpreadTS](https://github.com/slahrichi/WildfireSpreadTS) at commit `ed221d4`), so our rows can be compared directly with their Table 2.
 
 ### The protocol, line by line
 
@@ -183,7 +183,7 @@ Our models are scored under the test protocol of the current state of the art, [
 
 **Not part of the protocol** (choices of their model, not of the benchmark): the Veg feature subset, focal loss, ImageNet-pretrained encoder, 10k training steps at batch 64, sin-encoded angles. Our models use all features, plain BCE and no pretraining. Also note that their training code still has the fold index-mapping bug fixed upstream in `SebastianGer/WildfireSpreadTS@ab3c8f3`; it affects which fires enter *training*, not the test set.
 
-**Gerard et al.'s protocol** (`AP (full)` column): the whole image, centre-cropped to multiples of 32, is both input and scored region (`convert_hdf5.benchmark_crop`); reported with the population std (ddof = 0). `benchmark persistence` reproduces their Table 2 persistence AP exactly (0.187 / 0.105 / 0.194 / 0.287 per test year, 0.193 ± 0.065).
+**Cross-check against the original benchmark.** The folds, test samples, target definition and metric are the same as in [Gerard et al., NeurIPS 2023](https://papers.neurips.cc/paper_files/paper/2023/file/ebd545176bdaa9cd5d45954947bd74b7-Paper-Datasets_and_Benchmarks.pdf), who scored the whole image instead of the centre window. `benchmark persistence` reproduces their Table 2 persistence AP exactly (0.187 / 0.105 / 0.194 / 0.287 per test year, 0.193 ± 0.065), which validates those shared parts independently of Lahrichi's code. Each run record also keeps the whole-image AP as `test_ap`; it is not part of the leaderboard.
 
 ### Verify
 
@@ -196,25 +196,31 @@ uv run python -m graphml_wildfire.benchmark persistence   # ~8 min, reads the ra
 
 ### Leaderboard
 
-AP is the mean ± std over the 12 folds; compare only within a column. **AP (centre 128)** is the Lahrichi protocol above; **AP (full)** the Gerard protocol. F1 and IoU are at probability 0.5 on the full image. Published rows use the features marked (Veg / Multi / All); ours use all features.
+Every number is under the protocol above: the centre 128 × 128 window as model input and scored region, 12 folds, mean ± sample std. F1 and IoU are at probability 0.5, as their code logs them. Published rows are Lahrichi et al.'s Table 2 with the feature set of each entry; ours use all features.
 
-| Model | Days | Params | Folds | AP (full) | AP (centre 128) | F1 | IoU |
+| Model | Days | Features | Params | Folds | AP (centre 128) | F1 | IoU |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **Published** | | | | | | | |
-| [Gerard](https://papers.neurips.cc/paper_files/paper/2023/file/ebd545176bdaa9cd5d45954947bd74b7-Paper-Datasets_and_Benchmarks.pdf): persistence | 1 | 0 | 12 | 0.193 ± 0.065 | – | | |
-| [Gerard](https://papers.neurips.cc/paper_files/paper/2023/file/ebd545176bdaa9cd5d45954947bd74b7-Paper-Datasets_and_Benchmarks.pdf): logistic regression (All) | 1 | 361 | 12 | 0.286 ± 0.092 | – | | |
-| [Gerard](https://papers.neurips.cc/paper_files/paper/2023/file/ebd545176bdaa9cd5d45954947bd74b7-Paper-Datasets_and_Benchmarks.pdf): Res18 U-Net (All) | 1 | 14.4M | 12 | 0.341 ± 0.086 | – | | |
-| [Gerard](https://papers.neurips.cc/paper_files/paper/2023/file/ebd545176bdaa9cd5d45954947bd74b7-Paper-Datasets_and_Benchmarks.pdf): Res18 U-Net (All) | 5 | 14.7M | 12 | 0.325 ± 0.108 | – | | |
-| [Gerard](https://papers.neurips.cc/paper_files/paper/2023/file/ebd545176bdaa9cd5d45954947bd74b7-Paper-Datasets_and_Benchmarks.pdf): ConvLSTM (All) | 5 | 240K | 12 | 0.292 ± 0.094 | – | | |
-| [Gerard](https://papers.neurips.cc/paper_files/paper/2023/file/ebd545176bdaa9cd5d45954947bd74b7-Paper-Datasets_and_Benchmarks.pdf): UTAE (All) | 5 | 1.1M | 12 | 0.321 ± 0.135 | – | | |
-| [Gerard](https://papers.neurips.cc/paper_files/paper/2023/file/ebd545176bdaa9cd5d45954947bd74b7-Paper-Datasets_and_Benchmarks.pdf): UTAE (Veg, best) | 5 | 1.1M | 12 | 0.372 ± 0.088 | – | | |
-| [Lahrichi](https://arxiv.org/abs/2502.12003v3): Res18-UNet (All) | 1 | 14.3M | 12 | – | 0.460 ± 0.084 | | |
-| [Lahrichi](https://arxiv.org/abs/2502.12003v3): Res18-UNet (Multi, best T=1) | 1 | 14.3M | 12 | – | 0.468 ± 0.087 | | |
-| [Lahrichi](https://arxiv.org/abs/2502.12003v3): Res18-UNet, data fusion (Veg) | 5 | 14.4M | 12 | – | 0.472 ± 0.083 | | |
-| [Lahrichi](https://arxiv.org/abs/2502.12003v3): UTAE(Res18) (All) | 5 | 14.6M | 12 | – | 0.475 ± 0.091 | | |
-| [Lahrichi](https://arxiv.org/abs/2502.12003v3): UTAE(Res18) (Veg, best) | 5 | 14.6M | 12 | – | 0.478 ± 0.085 | | |
-| **Ours: baselines (1.5 km nodes)** | | | | | | | |
-<!-- OURS -->
+| **Published (Lahrichi et al. 2026, Table 2)** | | | | | | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): Res18-UNet | 1 | Veg | 14.3M | 12 | 0.455 ± 0.090 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): Res18-UNet | 1 | Multi | 14.3M | 12 | 0.468 ± 0.087 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): Res18-UNet | 1 | All | 14.3M | 12 | 0.460 ± 0.084 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): Res50-UNet | 1 | Multi | 32.5M | 12 | 0.459 ± 0.090 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): SwinUnet | 1 | Multi | 27.2M | 12 | 0.437 ± 0.082 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): SegFormer-B2 | 1 | Multi | 27.5M | 12 | 0.436 ± 0.083 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): Res18-UNet, data-level fusion | 5 | Veg | 14.4M | 12 | 0.472 ± 0.083 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): SwinUnet, data-level fusion | 5 | Multi | 27.3M | 12 | 0.453 ± 0.083 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): SegFormer, data-level fusion | 5 | Multi | 27.7M | 12 | 0.439 ± 0.081 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): UTAE | 5 | Multi | 1.1M | 12 | 0.459 ± 0.088 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): UTAE(Res18) | 5 | Veg | 14.6M | 12 | 0.478 ± 0.085 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): UTAE(Res18) | 5 | All | 14.6M | 12 | 0.475 ± 0.091 | | |
+| **Ours: baselines (1.5 km nodes, all features)** | | | | | | | |
+| persistence_w5_p4 | 5 | all | 0 | 12 | 0.246 ± 0.071 | 0.382 ± 0.062 | 0.238 ± 0.047 |
+| logreg_w1_p4 | 1 | all | 50 | 12 | 0.304 ± 0.079 | 0.188 ± 0.073 | 0.105 ± 0.044 |
+| logreg_w5_p4 | 5 | all | 246 | 12 | 0.315 ± 0.075 | 0.230 ± 0.065 | 0.131 ± 0.041 |
+| mlp_w5_p4 | 5 | all | 28,289 | 12 | 0.362 ± 0.070 | 0.311 ± 0.068 | 0.186 ± 0.048 |
+| cnn_w5_p4 | 5 | all | 2,025,089 | 12 | 0.400 ± 0.063 | 0.277 ± 0.049 | 0.161 ± 0.033 |
+| **Ours: graph models** | | | | | | | |
+| *to be added* | | | | | | | |
 
 Our baselines (`scripts/run_baselines.sh`) predict on 4 × 4 pixel nodes (1.5 km); a node's score is given to all its pixels, so the metric is exactly the pixel-level one.
 
@@ -227,4 +233,4 @@ scripts/run_baselines.sh                                  # baselines, 12 folds 
 uv run python -m graphml_wildfire.benchmark summary       # leaderboard rows as markdown
 ```
 
-To add a model, run it on all 12 folds writing one record per fold to `results/benchmark_runs.jsonl` with both `test_ap` and `test_ap_centre128` computed as in `train.run` (the centre-128 value from a `centre_input=True` pass), then paste its row from `benchmark summary` into the table.
+To add a model, run it on all 12 folds writing one record per fold to `results/benchmark_runs.jsonl` with `test_ap_centre128`, `test_f1` and `test_iou` computed as in `train.run` (from a `centre_input=True` pass), then paste its row from `benchmark summary` into the table.
