@@ -163,6 +163,16 @@ For edge `i -> j`, the convention is `S[j, i] = edge_weight`. The grid operator
 uses the directed eight-neighbor topology and gives every
 edge raw weight `1`.
 
+`normalize_shift` scales the weights to unit spectral norm (the largest singular
+value, which is `|λmax|` when `S` is symmetric), and `to_sparse` assembles the
+SciPy sparse matrix that computes `S x`:
+
+```python
+from graphml_wildfire.graph import normalize_shift, to_sparse
+
+shift_matrix = to_sparse(normalize_shift(grid_shift))
+```
+
 ## Benchmark
 
 Our models are scored under the test protocol of the current state of the art, [Lahrichi et al., WACV 2026](https://arxiv.org/abs/2502.12003v3) (UTAE(Res18), 0.478 ± 0.085), reproduced one-to-one from their code ([slahrichi/WildfireSpreadTS](https://github.com/slahrichi/WildfireSpreadTS) at commit `ed221d4`), so our rows can be compared directly with their Table 2.
@@ -234,3 +244,13 @@ uv run python -m graphml_wildfire.benchmark summary       # leaderboard rows as 
 ```
 
 To add a model, run it on all 12 folds writing one record per fold to `results/benchmark_runs.jsonl` with `test_ap_centre128`, `test_f1` and `test_iou` computed as in `train.run` (from a `centre_input=True` pass), then paste its row from `benchmark summary` into the table.
+
+### Graph VAR
+
+`gvar` is the graph polynomial VAR of [Isufi et al., 2019](https://arxiv.org/abs/1810.08581), eq. (13). It predicts tomorrow's burning fraction of every node as `Σₚ Σₖ ψ[p, k] Sᵏ x[t+1−p]`: the burning fractions `x` of the last `window` days, each filtered over up to `hops` hops of the shift operator `S` of the current day. The `window × (hops + 1)` coefficients are shared by all nodes, days and fires and are fitted by least squares on the training years. The fit is closed-form, so one call runs all 12 folds in seconds:
+
+```bash
+uv run python -m graphml_wildfire.train_graph_var --shift grid --window 5 --hops 2
+```
+
+The model sees only the fire signal, not the other features, and `--window 1 --hops 0` ranks nodes exactly like persistence. Its scores are predicted burning fractions, which rarely reach 0.5, so compare its F1 and IoU through `test_f1_tuned` and `test_iou_tuned` in the results file (threshold tuned on the validation year). A new shift operator is added to `SHIFTS` in `train_graph_var.py`.
