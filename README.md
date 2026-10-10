@@ -220,9 +220,9 @@ Every number is under the protocol above: the centre 128 × 128 window as model 
 | mlp_w5_p4 | 5 | all | 28,289 | 12 | 0.362 ± 0.070 | 0.311 ± 0.068 | 0.186 ± 0.048 |
 | cnn_w5_p4 | 5 | all | 2,025,089 | 12 | 0.400 ± 0.063 | 0.277 ± 0.049 | 0.161 ± 0.033 |
 | **Ours: graph models** | | | | | | | |
-| *to be added* | | | | | | | |
+| pixel-graph-time CNN (`pixel_gtcnn_attention_w5_p2_gate`) | 5 | all | 122,674 | 12 | 0.496 ± 0.091 | 0.453 ± 0.066 | 0.295 ± 0.056 |
 
-Our baselines (`scripts/run_baselines.sh`) predict on 4 × 4 pixel nodes (1.5 km); a node's score is given to all its pixels, so the metric is exactly the pixel-level one.
+Our baselines (`scripts/run_baselines.sh`) predict on 4 × 4 pixel nodes (1.5 km); a node's score is given to all its pixels, so the metric is exactly the pixel-level one. The graph model predicts per 375 m pixel from 0.75 km nodes; see the section below. Its ablation without the state-gated mix (0.492 with the whole image as input) will be added once re-scored under the centre-input protocol.
 
 ### Reproduce and add a model
 
@@ -242,12 +242,13 @@ The model behind our best result: a graph-time convolutional network on a grid o
 ```
 pixels [B, 5 days, 3, 2H, 2W]  (fire mask, detection time, NDVI at 375 m)
   │ pixel encoder: conv 3×3 → GELU → conv 3×3 → GELU (16 ch)
-  │ avg-pool 2×2 → nodes, concat with the 49 node channels → 1×1 conv → 64
+  │ avg-pool 2×2 → nodes, concat with the 53 node channels → 1×1 conv → 64
   ▼
 4 × graph-time layer:
   S_t  = attention over the 8 neighbours, from the node states and the edge geometry
          (wind alignment and speed, slope), one operator per node, day and layer
   S_x  = s₀₀ I + s₀₁ (I⊗S_t) + s₁₀ (S_T⊗I) + s₁₁ (S_T⊗S_{t−1}),  S_T: day t ← day t−1
+         with s = softmax(s_global + W_gate · x_i) chosen per node from its state
   X   ← X + GELU(NodeNorm( Σ_{k=0..3} H_k S_xᵏ X ))
   ▼
 last day's node states → nearest upsample ×2 → concat with the pixel features
@@ -261,7 +262,7 @@ one logit per 375 m pixel for the next day
 - `models/pixel.py`: the pixel encoder/decoder around it.
 - `data/pixels.py`: the 375 m inputs and targets, cached per fire from the raw GeoTIFFs.
 
-121K parameters, trained from scratch with pixel-level BCE; see `train.py` for the recipe (AdamW, one-cycle, 30 epochs, random 24 km crops with flips and transposes, best epoch by validation AP).
+The 53 node channels are the 49 of the benchmark data plus four orientation scalars (aspect and wind relative to north and to each other), which survive the flip/transpose augmentation. 122,674 parameters, trained from scratch with pixel-level BCE; see `train.py` for the recipe (AdamW, one-cycle, 30 epochs, random 24 km crops with flips and transposes, best epoch by validation AP).
 
 ### Reproduce
 
