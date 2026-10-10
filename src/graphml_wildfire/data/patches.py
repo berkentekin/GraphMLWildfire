@@ -20,13 +20,16 @@ CONTINUOUS = [
 # Unit vectors in array coordinates (row grows southward, col grows eastward), from the circular
 # block means of the direction channels. wind_* points downwind, aspect_* points downslope.
 VECTOR = ["wind_row", "wind_col", "aspect_row", "aspect_col", "fc_wind_row", "fc_wind_col"]
+# Orientation scalars: aspect and wind relative to north and to each other (south-facing slopes ignite
+# measurably less often; these survive the flip/transpose augmentation, which the raw vectors do not).
+ORIENTATION = ["aspect_north", "wind_north", "aspect_wind", "fc_wind_north"]
 LANDCOVER = [name for name in PROCESSED_FEATURE_NAMES if name.startswith("land_cover_")]
 MASKS = ["viirs_missing", "ndvi_missing"]
 # fire_frac/fire_time describe the current day; the rest summarise the HISTORY days up to it,
 # so a node never sees further back than the 5-day models of the WildfireSpreadTS benchmark.
 FIRE = ["fire_frac", "fire_time", "burned_ever", "recency_2d", "recency_7d"]
 HISTORY = 5
-CHANNELS = CONTINUOUS + VECTOR + LANDCOVER + MASKS + FIRE
+CHANNELS = CONTINUOUS + VECTOR + ORIENTATION + LANDCOVER + MASKS + FIRE
 CHANNEL_INDEX = {name: index for index, name in enumerate(CHANNELS)}
 
 _LOG_SCALED = {"total_precipitation", "forecast_total_precipitation"}
@@ -46,6 +49,11 @@ def node_features(source: h5py.File) -> np.ndarray:
         out[f"{prefix}wind_col"] = np.nan_to_num(-named[f"{name}_sin"])
     out["aspect_row"] = np.nan_to_num(-named["aspect_cos"])
     out["aspect_col"] = np.nan_to_num(named["aspect_sin"])
+    # north = (-1, 0) in (row, col) coordinates: the row index grows southward.
+    out["aspect_north"] = -out["aspect_row"]
+    out["wind_north"] = -out["wind_row"]
+    out["fc_wind_north"] = -out["fc_wind_row"]
+    out["aspect_wind"] = out["aspect_row"] * out["wind_row"] + out["aspect_col"] * out["wind_col"]
     for name in MASKS:
         out[name] = source[name][:]
 

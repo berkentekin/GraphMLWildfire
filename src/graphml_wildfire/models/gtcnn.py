@@ -91,23 +91,33 @@ class GraphTimeLayer(nn.Module):
     sum to one, where S_T shifts every node signal one day forward.
     """
 
-    def __init__(self, channels: int, taps: int, heads: int, offsets: list[tuple[int, int]], attention: bool, dropout: float):
+    def __init__(self, channels: int, taps: int, heads: int, offsets: list[tuple[int, int]], attention: bool, dropout: float, gate: bool = True):
         super().__init__()
         self.taps, self.offsets = taps, offsets
         self.mix = nn.Parameter(torch.tensor([0.0, 1.0, 1.0, 1.0]))
+        # Per-node correction to the mix from the node state (zero at start, so the global mix is the prior):
+        # a node on the front and a node in the burnt interior weigh "today's neighbours" and "yesterday" differently.
+        self.gate = nn.Conv2d(channels, 4, 1) if gate else None
+        if gate:
+            nn.init.zeros_(self.gate.weight)
+            nn.init.zeros_(self.gate.bias)
         self.attention = EdgeAttention(channels, heads, offsets) if attention else None
         self.filter = nn.Conv2d(channels * (taps + 1), channels, 1)
         self.norm = NodeNorm(channels)
         self.dropout = nn.Dropout(dropout)
 
     def product_shift(self, state: torch.Tensor, weights: torch.Tensor, days: int) -> torch.Tensor:
-        mix = torch.softmax(self.mix, dim=0)
+        logits = self.mix[None, :, None, None]
+        if self.gate is not None:
+            logits = logits + self.gate(state).float()
+        mix = torch.softmax(logits, dim=1).to(state.dtype)  # [N, 4, H, W]: self, neighbours, self yesterday, neighbours yesterday
         spatial = apply_shift(state, weights.to(state.dtype), self.offsets)
-        out = mix[0] * state + mix[1] * spatial
+        out = mix[:, 0:1] * state + mix[:, 1:2] * spatial
         if days > 1:
-            delayed = (mix[2] * state + mix[3] * spatial).unflatten(0, (-1, days))
-            delayed = torch.cat([torch.zeros_like(delayed[:, :1]), delayed[:, :-1]], dim=1)
-            out = out + delayed.flatten(0, 1)
+            def yesterday(values: torch.Tensor) -> torch.Tensor:
+                values = values.unflatten(0, (-1, days))
+                return torch.cat([torch.zeros_like(values[:, :1]), values[:, :-1]], dim=1).flatten(0, 1)
+            out = out + mix[:, 2:3] * yesterday(state) + mix[:, 3:4] * yesterday(spatial)
         return out
 
     def forward(self, state: torch.Tensor, weights: torch.Tensor | None, geometry: dict[str, torch.Tensor], days: int) -> torch.Tensor:
@@ -136,6 +146,7 @@ class GraphTimeCNN(nn.Module):
         patch_metres: float = 1500.0,
         wind_gain: float = 0.3,
         slope_gain: float = 3.0,
+        gate: bool = True,
     ):
         super().__init__()
         if graph not in GRAPHS:
@@ -151,7 +162,7 @@ class GraphTimeCNN(nn.Module):
         self.edge_net = EdgeWeightNet(heads, len(self.offsets)) if graph == "learned" else None
         self.encoder = nn.Conv2d(in_channels, hidden, 1)
         self.layers = nn.ModuleList(
-            GraphTimeLayer(hidden, taps, learned_heads, self.offsets, graph == "attention", dropout) for _ in range(layers)
+            GraphTimeLayer(hidden, taps, learned_heads, self.offsets, graph == "attention", dropout, gate) for _ in range(layers)
         )
         self.head = nn.Sequential(nn.Conv2d(hidden, hidden, 1), nn.GELU(), nn.Conv2d(hidden, 1, 1))
 

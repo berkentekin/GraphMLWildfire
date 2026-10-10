@@ -45,6 +45,7 @@ class TrainConfig:
     layers: int = 4
     taps: int = 3  # gtcnn only
     heads: int = 4  # gtcnn only
+    gate: int = 1  # gtcnn only: per-node gating of the product-graph mix
     dropout: float = 0.1
     checkpoint_dir: str = "data/checkpoints"
     pixel_dir: str = "data/cache/pixels"  # pixel_gtcnn only
@@ -296,7 +297,7 @@ def build_model(config: TrainConfig) -> nn.Module:
     channels = len(CHANNELS)
     gtcnn_kwargs = dict(
         graph=config.graph, hidden=config.hidden, layers=config.layers, taps=config.taps, heads=config.heads,
-        hops=config.hops, dropout=config.dropout, patch_metres=375.0 * config.patch,
+        hops=config.hops, dropout=config.dropout, patch_metres=375.0 * config.patch, gate=bool(config.gate),
     )
     if config.model == "gtcnn":
         return GraphTimeCNN(channels, **gtcnn_kwargs)
