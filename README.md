@@ -220,17 +220,77 @@ Every number is under the protocol above: the centre 128 × 128 window as model 
 | mlp_w5_p4 | 5 | all | 28,289 | 12 | 0.362 ± 0.070 | 0.311 ± 0.068 | 0.186 ± 0.048 |
 | cnn_w5_p4 | 5 | all | 2,025,089 | 12 | 0.400 ± 0.063 | 0.277 ± 0.049 | 0.161 ± 0.033 |
 | **Ours: graph models** | | | | | | | |
-| *to be added* | | | | | | | |
+| pixel-graph-time CNN (`pixel_gtcnn_w5_p2`) | 5 | all | 115,441 | 12 | 0.510 ± 0.087 | 0.466 ± 0.072 | 0.307 ± 0.061 |
 
-Our baselines (`scripts/run_baselines.sh`) predict on 4 × 4 pixel nodes (1.5 km); a node's score is given to all its pixels, so the metric is exactly the pixel-level one.
+Our baselines (`scripts/run_baselines.sh`) predict on 4 × 4 pixel nodes (1.5 km); a node's score is given to all its pixels, so the metric is exactly the pixel-level one. The pixel-graph-time CNN predicts every 375 m pixel from 2 × 2 pixel nodes (0.75 km); see [its section](#pixel-graph-time-cnn) below.
 
 ### Reproduce and add a model
 
 ```bash
 uv run python -m graphml_wildfire.data.convert_hdf5 data/raw/wildfirespreadts \
   data/processed/wildfirespreadts_benchmark_b4 --benchmark-crop   # see Preprocess
+uv run python -m graphml_wildfire.data.mmap \
+  --cache-dir data/processed/wildfirespreadts_benchmark_b4 --output-dir data/cache/b4   # training cache
 scripts/run_baselines.sh                                  # baselines, 12 folds each (~1 h)
 uv run python -m graphml_wildfire.benchmark summary       # leaderboard rows as markdown
 ```
 
+Training reads the memory-mapped cache of `data/mmap.py` (`data/cache/b<patch>`): one directory per fire with the raw node features, the targets and, for the pixel model, the 375 m arrays. Processes map it read-only and share the page cache, so several runs fit on one box.
+
 To add a model, run it on all 12 folds writing one record per fold to `results/benchmark_runs.jsonl` with `test_ap_centre128`, `test_f1` and `test_iou` computed as in `train.run` (from a `centre_input=True` pass), then paste its row from `benchmark summary` into the table.
+
+## Pixel-graph-time CNN
+
+The model behind our best result: a graph-time convolutional network ([Isufi & Mazzola, 2021](https://arxiv.org/abs/2103.01730)) on a grid of 0.75 km nodes whose spatial shift operator is learned, wrapped in a 375 m pixel encoder and decoder. 115,441 parameters, trained from scratch.
+
+![Pixel-graph-time CNN](docs/pixel_graph_time_cnn.png)
+
+Each stack is the 5 input days; the tall slabs are the 375 m stages, the half-size slabs the 0.75 km node stages. The pixel encoder (two 3×3 convolutions, 16 channels) runs on every day; its maps are average-pooled 2×2 to one vector per node and concatenated with the 45 node channels (61), projected to 64 by a 1×1 convolution, and filtered by four graph-time layers (64 channels, 4 heads, 3 taps). The last day's node states are upsampled ×2, concatenated with the last day's pixel maps (80 channels) and decoded by a 3×3 convolution (32 channels) and a 1×1 convolution to one logit per 375 m pixel.
+
+### The learned shift operator
+
+A graph-time CNN filters a space-time signal with powers of a product-graph shift $`S_\times`$ built from a spatial operator $`S`$ and the time shift $`S_T`$. In the original model $`S`$ is given once (here it would be the 8-neighbour grid). Here $`S`$ is a function of the node states, recomputed for every node, day and layer, so the direction in which fire information travels is decided by what is happening at each node that day.
+
+For day $`t`$, node $`i`$ and its stencil neighbour $`j = i + \delta`$ ($`\delta`$ one of the 8 offsets), every head $`h \in \{1, \dots, 4\}`$ scores the directed edge $`j \to i`$ from the two node states $`x_{t,i}, x_{t,j} \in \mathbb{R}^{64}`$ (GATv2 form):
+
+```math
+e^{(h)}_{t,ij} = a_h^{\top} \, \mathrm{LeakyReLU}_{0.2}\!\left( W_q^{(h)} x_{t,i} + W_k^{(h)} x_{t,j} + b_\delta^{(h)} \right), \qquad W_q^{(h)}, W_k^{(h)} \in \mathbb{R}^{8 \times 64},\; b_\delta^{(h)}, a_h \in \mathbb{R}^{8}
+```
+
+```math
+\big[S_t^{(h)}\big]_{ij} = \frac{\exp e^{(h)}_{t,ij}}{\sum_{j' \in \mathcal{N}(i)} \exp e^{(h)}_{t,ij'}} \quad \text{for } j \in \mathcal{N}(i), \qquad 0 \text{ otherwise.}
+```
+
+$`b_\delta`$ is a learned prior per direction, the only place the compass enters $`S`$; wind, slope and the rest enter through the node states. Each $`S_t^{(h)}`$ is a directed, row-stochastic operator with 8 non-zeros per row, stored as 8 weights per node and applied as a stencil (`graphs/stencil.py`, hand-written backward pass, no dense matrix). The 64 channels are split into 4 groups of 16, one operator each.
+
+The product graph over the $`T = 5`$ input days uses the day's own $`S_t`$ and the time shift $`S_T`$ (day $`t \leftarrow t - 1`$):
+
+```math
+(S_\times X)_{t,i} = s_0\, x_{t,i} + s_1 \sum_{j} [S_t]_{ij}\, x_{t,j} + s_2\, x_{t-1,i} + s_3 \sum_{j} [S_{t-1}]_{ij}\, x_{t-1,j}, \qquad s = \mathrm{softmax}\!\left( \bar{s} + W_g\, x_{t,i} \right) \in \Delta^3,
+```
+
+so the four product-graph weights (self, neighbours, self yesterday, neighbours yesterday) are chosen per node from its state too, around a learned global prior $`\bar{s}`$ ($`W_g`$ starts at zero). A layer is the graph filter of order 3 with a residual connection:
+
+```math
+X \leftarrow X + \mathrm{Dropout}\!\left( \mathrm{GELU}\!\left( \mathrm{NodeNorm}\!\left( \sum_{k=0}^{3} S_\times^{k}\, X\, H_k + c \right) \right) \right), \qquad H_k \in \mathbb{R}^{64 \times 64}.
+```
+
+Time only flows forward ($`S_T`$ is a lower shift), the receptive field grows by one node per tap and one day per layer, and the network commutes with translations of the grid. What is given up with respect to a fixed-graph GTCNN is its stability theory: $`S`$ is data-dependent.
+
+### Inputs and training
+
+The node channels are the 49 of the benchmark data minus the two missing-data masks and the aspect vector (45; measured neutral), standardised with training-year statistics; the 7 pixel channels are the active-fire mask, the detection time and the five native 375 m bands, standardised like the node feature of the same name. `train.py` holds the recipe: AdamW (lr 2 × 10⁻³, one-cycle with 10 % warm-up, no weight decay), 30 epochs of batches of 32 random 32 × 32-node crops (24 km) around the fire, flips and transposes with the wind vectors rotated accordingly, pixel-level BCE, bf16 autocast, the epoch with the best validation AP kept; one seed.
+
+### Reproduce
+
+```bash
+uv run python -m graphml_wildfire.data.convert_hdf5 data/raw/wildfirespreadts \
+  data/processed/wildfirespreadts_benchmark_b2 --benchmark-crop --block-size 2   # 0.75 km nodes
+uv run python -m graphml_wildfire.data.pixels                                     # 375 m arrays, ~1 min
+uv run python -m graphml_wildfire.data.mmap --cache-dir data/processed/wildfirespreadts_benchmark_b2 \
+  --pixel-dir data/cache/pixels --output-dir data/cache/b2                        # training cache, ~1 min
+scripts/run_pixel_gtcnn.sh                                                        # 12 folds, ~25 min each
+uv run python -m graphml_wildfire.benchmark summary
+```
+
+Each fold needs ~12 GB of GPU memory. Checkpoints go to `data/checkpoints/`; `uv run python -m graphml_wildfire.evaluate data/checkpoints/<run>.pt` re-scores one under the protocol.

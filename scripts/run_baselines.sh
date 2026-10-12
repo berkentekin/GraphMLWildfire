@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Fast non-graph baselines on all 12 WildfireSpreadTS folds; extra arguments go to every run.
+# The node-level baselines on all 12 WildfireSpreadTS folds (1.5 km nodes, as in the leaderboard);
+# extra arguments go to every run. Needs the training cache data/cache/b4 (see README).
 # Summarise with: uv run python -m graphml_wildfire.benchmark summary
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -16,7 +17,7 @@ for baseline in "${BASELINES[@]}"; do
   for fold in $(seq 0 11); do
     name="$(echo "$baseline" | tr -d '-' | tr ' ' '_')_f${fold}"
     echo "== $baseline --fold $fold"
-    uv run python -m graphml_wildfire.train $baseline --fold "$fold" "$@" > "data/logs/${name}.log" 2>&1
+    uv run python -m graphml_wildfire.train $baseline --patch 4 --weight-decay 1e-4 --fold "$fold" "$@" > "data/logs/${name}.log" 2>&1
     tail -n 1 "data/logs/${name}.log"
   done
 done
