@@ -243,52 +243,39 @@ To add a model, run it on all 12 folds writing one record per fold to `results/b
 
 The model behind our best result: a graph-time convolutional network ([Isufi & Mazzola, 2021](https://arxiv.org/abs/2103.01730)) on a grid of 0.75 km nodes whose spatial shift operator is learned, wrapped in a 375 m pixel encoder and decoder. 115,441 parameters, trained from scratch.
 
-```
-pixels  [B, 5 days, 7, 2H, 2W]   375 m: fire mask, detection time, NDVI, M11, I2, I1, EVI2
-  │  pixel encoder: conv 3×3 → GELU → conv 3×3 → GELU   (16 ch)
-  ├──────────────────────────────────────────────────────────────┐
-  │  avg-pool 2×2 → one vector per node (16 ch)                  │  last day's pixel features (16 ch)
-nodes   [B, 5 days, 45, H, W]    0.75 km: weather, forecast, terrain, land cover, fire history
-  │  concat (61 ch) → 1×1 conv → 64
-  ▼
-4 × graph-time layer (64 ch, 4 heads, 3 taps):
-  S_t  = attention over the 8 neighbours, from the node states    (one operator per node, day, layer and head)
-  S_x  = s₀ I + s₁ (I_T ⊗ S_t) + s₂ (S_T ⊗ I_N) + s₃ (S_T ⊗ S_{t−1}),   s = softmax(s̄ + W_g x) per node
-  X   ← X + GELU(NodeNorm(Σ_{k=0..3} S_xᵏ X H_k))
-  ▼
-last day's node states (64 ch) → nearest upsample ×2 ───────────┘
-  │  concat (80 ch) → conv 3×3 → GELU (32 ch) → 1×1 conv
-  ▼
-one logit per 375 m pixel for the next day   [B, 2H, 2W]
-```
+![Pixel-graph-time CNN](docs/pixel_graph_time_cnn.png)
+
+Each stack is the 5 input days; the tall slabs are the 375 m stages, the half-size slabs the 0.75 km node stages. The pixel encoder (two 3×3 convolutions, 16 channels) runs on every day; its maps are average-pooled 2×2 to one vector per node and concatenated with the 45 node channels (61), projected to 64 by a 1×1 convolution, and filtered by four graph-time layers (64 channels, 4 heads, 3 taps). The last day's node states are upsampled ×2, concatenated with the last day's pixel maps (80 channels) and decoded by a 3×3 convolution (32 channels) and a 1×1 convolution to one logit per 375 m pixel.
 
 ### The learned shift operator
 
-A graph-time CNN filters a space-time signal with powers of a product-graph shift S_x built from a spatial operator S and the time shift S_T. In the original model S is given once (here it would be the 8-neighbour grid). Here S is a function of the node states, recomputed for every node, day and layer, so the direction fire information travels is decided by what is happening at each node that day.
+A graph-time CNN filters a space-time signal with powers of a product-graph shift $`S_\times`$ built from a spatial operator $`S`$ and the time shift $`S_T`$. In the original model $`S`$ is given once (here it would be the 8-neighbour grid). Here $`S`$ is a function of the node states, recomputed for every node, day and layer, so the direction in which fire information travels is decided by what is happening at each node that day.
 
-For day t, node i and its stencil neighbour j = i + δ (δ one of the 8 offsets), every head h ∈ {1..4} scores the directed edge j → i from the two node states x_{t,i}, x_{t,j} ∈ ℝ⁶⁴ (GATv2 form):
+For day $`t`$, node $`i`$ and its stencil neighbour $`j = i + \delta`$ ($`\delta`$ one of the 8 offsets), every head $`h \in \{1, \dots, 4\}`$ scores the directed edge $`j \to i`$ from the two node states $`x_{t,i}, x_{t,j} \in \mathbb{R}^{64}`$ (GATv2 form):
 
-```
-e_{t,ij}^{(h)} = a_h · LeakyReLU_{0.2}( W_q^{(h)} x_{t,i} + W_k^{(h)} x_{t,j} + b_δ^{(h)} ),      W_q, W_k ∈ ℝ^{8×64},  b_δ, a_h ∈ ℝ⁸
-[S_t^{(h)}]_{ij} = exp(e_{t,ij}^{(h)}) / Σ_{j' ∈ N(i)} exp(e_{t,ij'}^{(h)})     for j ∈ N(i), 0 otherwise.
-```
-
-b_δ is a learned prior per direction (the only place the compass enters S; wind, slope and the rest enter through the node states). Each S_t^{(h)} is therefore a directed, row-stochastic operator with 8 non-zeros per row, stored as 8 weights per node and applied as a stencil (`graphs/stencil.py`, with a hand-written backward pass). The 64 channels are split into 4 groups of 16, one operator each.
-
-The product graph over the T = 5 input days uses the day's own S_t and the time shift S_T (day t ← t − 1):
-
-```
-(S_x X)_{t,i} = s₀ x_{t,i} + s₁ Σ_j [S_t]_{ij} x_{t,j} + s₂ x_{t−1,i} + s₃ Σ_j [S_{t−1}]_{ij} x_{t−1,j},
-s = softmax( s̄ + W_g x_{t,i} ) ∈ Δ³,
+```math
+e^{(h)}_{t,ij} = a_h^{\top} \, \mathrm{LeakyReLU}_{0.2}\!\left( W_q^{(h)} x_{t,i} + W_k^{(h)} x_{t,j} + b_\delta^{(h)} \right), \qquad W_q^{(h)}, W_k^{(h)} \in \mathbb{R}^{8 \times 64},\; b_\delta^{(h)}, a_h \in \mathbb{R}^{8}
 ```
 
-so the four product-graph weights (self, neighbours, self yesterday, neighbours yesterday) are also chosen per node from its state, around a learned global prior s̄ (W_g starts at zero). A layer is the graph filter of order 3 with a residual connection:
-
-```
-X ← X + Dropout(GELU(NodeNorm( Σ_{k=0}^{3} S_xᵏ X H_k + c ))),      H_k ∈ ℝ^{64×64}.
+```math
+\big[S_t^{(h)}\big]_{ij} = \frac{\exp e^{(h)}_{t,ij}}{\sum_{j' \in \mathcal{N}(i)} \exp e^{(h)}_{t,ij'}} \quad \text{for } j \in \mathcal{N}(i), \qquad 0 \text{ otherwise.}
 ```
 
-Time only flows forward (S_T is a lower shift), the receptive field grows by one node per tap and one day per layer, and the whole network commutes with translations of the grid. What is given up with respect to a fixed-graph GTCNN is its stability theory: S here is data-dependent.
+$`b_\delta`$ is a learned prior per direction, the only place the compass enters $`S`$; wind, slope and the rest enter through the node states. Each $`S_t^{(h)}`$ is a directed, row-stochastic operator with 8 non-zeros per row, stored as 8 weights per node and applied as a stencil (`graphs/stencil.py`, hand-written backward pass, no dense matrix). The 64 channels are split into 4 groups of 16, one operator each.
+
+The product graph over the $`T = 5`$ input days uses the day's own $`S_t`$ and the time shift $`S_T`$ (day $`t \leftarrow t - 1`$):
+
+```math
+(S_\times X)_{t,i} = s_0\, x_{t,i} + s_1 \sum_{j} [S_t]_{ij}\, x_{t,j} + s_2\, x_{t-1,i} + s_3 \sum_{j} [S_{t-1}]_{ij}\, x_{t-1,j}, \qquad s = \mathrm{softmax}\!\left( \bar{s} + W_g\, x_{t,i} \right) \in \Delta^3,
+```
+
+so the four product-graph weights (self, neighbours, self yesterday, neighbours yesterday) are chosen per node from its state too, around a learned global prior $`\bar{s}`$ ($`W_g`$ starts at zero). A layer is the graph filter of order 3 with a residual connection:
+
+```math
+X \leftarrow X + \mathrm{Dropout}\!\left( \mathrm{GELU}\!\left( \mathrm{NodeNorm}\!\left( \sum_{k=0}^{3} S_\times^{k}\, X\, H_k + c \right) \right) \right), \qquad H_k \in \mathbb{R}^{64 \times 64}.
+```
+
+Time only flows forward ($`S_T`$ is a lower shift), the receptive field grows by one node per tap and one day per layer, and the network commutes with translations of the grid. What is given up with respect to a fixed-graph GTCNN is its stability theory: $`S`$ is data-dependent.
 
 ### Inputs and training
 
