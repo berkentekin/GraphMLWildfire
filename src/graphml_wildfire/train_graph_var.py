@@ -2,7 +2,7 @@
 
 The fit is closed-form and the fire signal needs no fold statistics, so one call builds the
 graph filter outputs of every sample once and runs all folds. Evaluation and the result rows
-follow `train.py`.
+follow `train.py`: the leaderboard number comes from a pass that sees only the centre window.
 
 Example:
     uv run python -m graphml_wildfire.train_graph_var --shift grid --window 5 --hops 2
@@ -60,13 +60,14 @@ class GraphVARConfig:
             self.experiment_name = f"gvar_{self.shift}_w{self.window}_k{self.hops}_p{self.patch}"
 
 
-def year_rows(config: GraphVARConfig, year: int) -> dict[str, np.ndarray]:
+def year_rows(config: GraphVARConfig, year: int, centre_input: bool = False) -> dict[str, np.ndarray]:
     """Regressors [rows, parameters] and pixel counts [rows] of every node of every sample of a year.
 
     A row is a node on one day: `fire` of its `pixels` burn the next day, `centre_fire` of its
     `centre_pixels` inside the central 128 x 128 window. Nodes with all-zero regressors score 0
     whatever the coefficients, so those that do not burn the next day are pooled into the last
-    row, which leaves every metric unchanged.
+    row, which leaves every metric unchanged. With `centre_input`, the graph and the signal only
+    cover the nodes containing the centre 128 x 128 pixels, as in `train.FireData`.
     """
 
     year_dir = Path(config.cache_dir) / str(year)
@@ -81,6 +82,10 @@ def year_rows(config: GraphVARConfig, year: int) -> dict[str, np.ndarray]:
             if not source.attrs.get("benchmark_crop", False) or source.attrs["block_size"] != config.patch:
                 raise ValueError(f"{path} was not converted with --benchmark-crop --block-size {config.patch}")
             fire = {name: source[name][:] for name in _DATASETS}
+        if centre_input:
+            inside = [np.flatnonzero(fire["centre_pixels"].sum(axis=axis)) for axis in (1, 0)]
+            (top, bottom), (left, right) = ((indices[0], indices[-1] + 1) for indices in inside)
+            fire = {name: values[..., top:bottom, left:right] for name, values in fire.items()}
         signal = fire["fire_fraction"].reshape(len(fire["fire_fraction"]), -1)
         for day in range(FIRST_INPUT_DAY, len(signal) - 1):
             sample = model.regressors(SHIFTS[config.shift](fire, day), signal[day - config.window + 1 : day + 1])
@@ -110,6 +115,7 @@ def predict(model: GraphVAR, rows: dict[str, np.ndarray]):
 
 def run(config: GraphVARConfig, folds: list[int]) -> list[dict]:
     rows = {year: year_rows(config, year) for year in YEARS}
+    centre_rows = {year: year_rows(config, year, centre_input=True) for year in YEARS}
     results = []
     for index in folds:
         fold = FOLDS[index]
@@ -121,22 +127,28 @@ def run(config: GraphVARConfig, folds: list[int]) -> list[dict]:
         )
         val_scores, val_regions = predict(model, rows[fold.validation_year])
         test_scores, test_regions = predict(model, rows[fold.test_year])
+        centre_scores, centre_regions = predict(model, centre_rows[fold.test_year])
         threshold = best_f1_threshold(val_scores, *val_regions["full"])
         result = {
             "run_name": f"{config.experiment_name}_f{index}_s0",
             **asdict(config),
             "model": "gvar",
+            "features": "fire",
             "fold": index,
             "seed": 0,
             "parameters": model.parameters,
             "coefficients": model.coefficients.tolist(),
             "val_ap": average_precision(val_scores, *val_regions["full"]),
+            # Gerard et al. (2023): whole image in, all pixels of the benchmark crop scored.
             "test_ap": average_precision(test_scores, *test_regions["full"]),
-            "test_ap_centre128": average_precision(test_scores, *test_regions["centre"]),
-            # Benchmark convention: predicted burning fraction >= 0.5.
-            **{f"test_{name}": value for name, value in threshold_metrics(test_scores, *test_regions["full"], 0.5).items()},
-            # Threshold that maximises F1 on the validation year.
-            **{f"test_{name}_tuned": value for name, value in threshold_metrics(test_scores, *test_regions["full"], threshold).items()},
+            # Lahrichi et al. (2026): only the centre 128 x 128 window in, and scored.
+            "test_ap_centre128": average_precision(centre_scores, *centre_regions["centre"]),
+            # Diagnostic: the centre window scored from the whole-image pass (not a published protocol).
+            "test_ap_centre128_full_input": average_precision(test_scores, *test_regions["centre"]),
+            # F1 / IoU at a predicted burning fraction of 0.5 on the centre window.
+            **{f"test_{name}": value for name, value in threshold_metrics(centre_scores, *centre_regions["centre"], 0.5).items()},
+            # Same, at the threshold that maximises F1 on the validation year (not a published number).
+            **{f"test_{name}_tuned": value for name, value in threshold_metrics(centre_scores, *centre_regions["centre"], threshold).items()},
         }
         print(f"{result['run_name']}: val AP {result['val_ap']:.4f} test AP {result['test_ap']:.4f} "
               f"(centre128 {result['test_ap_centre128']:.4f}) F1 {result['test_f1']:.4f} IoU {result['test_iou']:.4f} "

@@ -230,7 +230,7 @@ Every number is under the protocol above: the centre 128 × 128 window as model 
 | mlp_w5_p4 | 5 | all | 28,289 | 12 | 0.362 ± 0.070 | 0.311 ± 0.068 | 0.186 ± 0.048 |
 | cnn_w5_p4 | 5 | all | 2,025,089 | 12 | 0.400 ± 0.063 | 0.277 ± 0.049 | 0.161 ± 0.033 |
 | **Ours: graph models** | | | | | | | |
-| *to be added* | | | | | | | |
+| gvar_grid_w5_k2_p4 | 5 | fire | 15 | 12 | 0.278 ± 0.072 | 0.166 ± 0.064 | 0.092 ± 0.038 |
 
 Our baselines (`scripts/run_baselines.sh`) predict on 4 × 4 pixel nodes (1.5 km); a node's score is given to all its pixels, so the metric is exactly the pixel-level one.
 
@@ -253,4 +253,4 @@ To add a model, run it on all 12 folds writing one record per fold to `results/b
 uv run python -m graphml_wildfire.train_graph_var --shift grid --window 5 --hops 2
 ```
 
-The model sees only the fire signal, not the other features, and `--window 1 --hops 0` ranks nodes exactly like persistence. Its scores are predicted burning fractions, which rarely reach 0.5, so compare its F1 and IoU through `test_f1_tuned` and `test_iou_tuned` in the results file (threshold tuned on the validation year). A new shift operator is added to `SHIFTS` in `train_graph_var.py`.
+The model sees only the fire signal, not the other features, and `--window 1 --hops 0` ranks nodes exactly like persistence. For the leaderboard number the graph and the signal are restricted to the nodes covering the centre 128 × 128 pixels, like the `centre_input=True` pass of `train.py`. Its scores are predicted burning fractions, which rarely reach 0.5, so compare its F1 and IoU through `test_f1_tuned` and `test_iou_tuned` in the results file (threshold tuned on the validation year). A new shift operator is added to `SHIFTS` in `train_graph_var.py`.

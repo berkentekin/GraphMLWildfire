@@ -151,7 +151,7 @@ def summary(results_file: str | Path) -> None:
             values = np.array([run[metric] for run in by_fold.values()])
             std = values.std(ddof=STD_DDOF[metric]) if len(values) > 1 else 0.0
             cells.append(f"{values.mean():.3f} ± {std:.3f}")
-        print(f"| {name} | {first['window']} | all | {first['parameters']:,} | {len(by_fold)} | " + " | ".join(cells) + " |")
+        print(f"| {name} | {first['window']} | {first.get('features', 'all')} | {first['parameters']:,} | {len(by_fold)} | " + " | ".join(cells) + " |")
 
 
 def verify() -> None:
