@@ -294,3 +294,50 @@ uv run python -m graphml_wildfire.benchmark summary
 ```
 
 Each fold needs ~12 GB of GPU memory. Checkpoints go to `data/checkpoints/`; `uv run python -m graphml_wildfire.evaluate data/checkpoints/<run>.pt` re-scores one under the protocol.
+
+## WSTS+ (2016–2023)
+
+Lahrichi et al. also publish results on WSTS+, the same dataset extended by four years (2016, 2017, 2022, 2023 from [Zenodo 17584629](https://zenodo.org/records/17584629); 1,005 fires, 24,462 days in total). The protocol is theirs again (`FireSpreadDataModule.split_fires(additional_data=True)`): four folds, each with four training years, two validation years and two test years, so every year is tested exactly once.
+
+| Fold | Train | Validation | Test |
+| --- | --- | --- | --- |
+| 0 | 2016, 2017, 2020, 2021 | 2018, 2019 | 2022, 2023 |
+| 1 | 2018, 2019, 2022, 2023 | 2020, 2021 | 2016, 2017 |
+| 2 | 2016, 2017, 2020, 2021 | 2022, 2023 | 2018, 2019 |
+| 3 | 2018, 2019, 2022, 2023 | 2016, 2017 | 2020, 2021 |
+
+The same model, recipe and scoring as above (`--protocol wstsplus`); mean ± sample std over the four folds. Published rows are their Table 5 (the paper does not say which std convention they use).
+
+| Model | Days | Features | Params | Folds | AP (centre 128) | F1 | IoU |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **Published (Lahrichi et al. 2026, Table 5)** | | | | | | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): Res18-UNet | 1 | Veg | 14.3M | 4 | 0.349 ± 0.109 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): Res18-UNet | 1 | Multi | 14.3M | 4 | 0.351 ± 0.105 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): Res18-UNet | 1 | All | 14.3M | 4 | 0.351 ± 0.122 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): Res50-UNet | 1 | Veg | 32.5M | 4 | 0.345 ± 0.096 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): Res50-UNet | 1 | Multi | 32.5M | 4 | 0.353 ± 0.122 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): Res50-UNet | 1 | All | 32.5M | 4 | 0.351 ± 0.122 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): UTAE(Res18) | 5 | Veg | 14.6M | 4 | 0.354 ± 0.113 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): UTAE(Res18) | 5 | Multi | 14.6M | 4 | 0.363 ± 0.129 | | |
+| [Lahrichi](https://arxiv.org/abs/2502.12003v3): UTAE(Res18) | 5 | All | 14.6M | 4 | 0.350 ± 0.117 | | |
+| **Ours** | | | | | | | |
+| pixel-graph-time CNN (`pixel_gtcnn_w5_p2_wstsplus`) | 5 | all | 115,441 | 4 | 0.450 ± 0.113 | 0.427 ± 0.102 | 0.276 ± 0.080 |
+
+Per fold (test years): 0.408 (2022, 2023), 0.313 (2016, 2017), 0.510 (2018, 2019), 0.570 (2020, 2021). The two new-year folds are the hard ones for every model: their Table 5 mean is 0.11 below Table 2 and ours drops by 0.06.
+
+### Build the extra years
+
+The WSTS+ rasters have the same 23 bands in the same order as WildfireSpreadTS, but no georeferencing and a different active-fire band: the detection hour (`hhmm // 100`) with 0 where nothing was detected, instead of `hhmm` with NaN. `convert_hdf5` and `pixels` recognise that encoding and map it back, so the fire masks and detection-time inputs are identical to the WSTS ones. Five 2022 fire directories in the archive contain no rasters and are skipped.
+
+```bash
+unzip data/raw/wstsplus/WSTSPlus.zip -d data/raw/wstsplus                          # WSTSPlus/{2016,2017,2022,2023}
+uv run python -m graphml_wildfire.data.convert_hdf5 data/raw/wstsplus/WSTSPlus \
+  data/processed/wildfirespreadts_benchmark_b2 --benchmark-crop --block-size 2     # one year at a time with --years to bound disk use
+uv run python -m graphml_wildfire.data.pixels --raw-dir data/raw/wstsplus/WSTSPlus
+uv run python -m graphml_wildfire.data.mmap --cache-dir data/processed/wildfirespreadts_benchmark_b2 \
+  --pixel-dir data/cache/pixels --output-dir data/cache/b2
+scripts/run_pixel_gtcnn_wstsplus.sh                                               # 4 folds
+uv run python -m graphml_wildfire.benchmark summary                               # prints the WSTS and the WSTS+ tables
+```
+
+The cache for the four extra years is about 35 GB on top of the WSTS one.

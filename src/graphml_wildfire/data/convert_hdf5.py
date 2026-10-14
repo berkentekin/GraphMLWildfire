@@ -26,6 +26,19 @@ DEFAULT_BLOCK_SIZE = 4
 CENTRE_CROP = 128
 
 
+def detection_time_hhmm(active_fire: np.ndarray) -> np.ndarray:
+    """The active-fire band in the WildfireSpreadTS encoding: VIIRS detection time as hhmm, NaN
+    where nothing was detected.
+
+    The WSTS+ rasters (Lahrichi et al., 2026) store the band the way the official HDF5 conversion
+    does: the hour (hhmm // 100) with 0 instead of NaN. Map that form onto the first.
+    """
+
+    if np.isnan(active_fire).any() or np.nanmax(active_fire, initial=0) >= 100:
+        return active_fire
+    return np.where(active_fire > 0, active_fire * 100, np.nan).astype(active_fire.dtype)
+
+
 def burning_pixels(active_fire: np.ndarray) -> np.ndarray:
     """Active-fire pixels as the WildfireSpreadTS benchmark sees them.
 
@@ -252,6 +265,8 @@ def convert_fire(
     in_centre = in_centre[rows, columns]
 
     def process(image: np.ndarray) -> dict[str, np.ndarray]:
+        image = image.copy()
+        image[ACTIVE_FIRE_INDEX] = detection_time_hhmm(image[ACTIVE_FIRE_INDEX])
         processed = preprocess_image(image[:, rows, columns], node_source_transform, block_size)
         burning = burning_pixels(image[ACTIVE_FIRE_INDEX, rows, columns])
         processed["centre_fire"] = _block_count(burning & in_centre, block_size)

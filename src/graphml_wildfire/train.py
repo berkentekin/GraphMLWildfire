@@ -27,7 +27,7 @@ import torch
 import wandb
 from torch import nn
 
-from .benchmark import FIRST_INPUT_DAY, FOLDS, YEARS, average_precision, best_f1_threshold, threshold_metrics
+from .benchmark import FIRST_INPUT_DAY, PROTOCOLS, average_precision, best_f1_threshold, threshold_metrics
 from .data.mmap import TARGETS
 from .data.patches import CHANNEL_INDEX, CHANNELS, CONTINUOUS, MASKS
 from .data.pixels import PIXEL_CHANNELS
@@ -65,6 +65,7 @@ class TrainConfig:
     crop: int = 32  # training crop in nodes
     val_stride: int = 3  # validate on every third sample during training
     compile: int = 1  # torch.compile the model (static shapes for training, dynamic for evaluation)
+    protocol: str = "wsts"  # "wsts": the 12 folds of 2018-2021; "wstsplus": the 4 folds of 2016-2023
     fold: int = 0
     seed: int = 0
     patch: int = 2  # pixels per node side: 2 (0.75 km nodes) for the pixel model, 4 (1.5 km) for the baselines
@@ -78,10 +79,15 @@ class TrainConfig:
             raise ValueError(f"Unknown model: {self.model}")
         if not 1 <= self.window <= FIRST_INPUT_DAY + 1:
             raise ValueError(f"window must be between 1 and {FIRST_INPUT_DAY + 1}")
+        if self.protocol not in PROTOCOLS:
+            raise ValueError(f"Unknown protocol: {self.protocol}")
+        if not 0 <= self.fold < len(PROTOCOLS[self.protocol]):
+            raise ValueError(f"fold must be between 0 and {len(PROTOCOLS[self.protocol]) - 1} for {self.protocol}")
         if not self.data_dir:
             self.data_dir = f"data/cache/b{self.patch}"
         if not self.experiment_name:
-            self.experiment_name = f"{self.model}_w{self.window}_p{self.patch}"
+            suffix = "" if self.protocol == "wsts" else f"_{self.protocol}"
+            self.experiment_name = f"{self.model}_w{self.window}_p{self.patch}{suffix}"
         if not self.experiment_name.strip():
             raise ValueError("experiment_name must not be empty")
 
@@ -92,21 +98,21 @@ class TrainConfig:
 
 
 class FireData:
-    """All fires of the four years of a fold, memory-mapped from the training cache and standardised
+    """All fires of the years of a fold, memory-mapped from the training cache and standardised
     per batch with training-year statistics."""
 
     def __init__(self, config: TrainConfig):
-        fold = FOLDS[config.fold]
+        fold = PROTOCOLS[config.protocol][config.fold]
         train_years = set(fold.train_years)
         self.window, self.patch, self.node_pixels = config.window, config.patch, config.patch**2
         self.input_channels = _GRAPH_INPUTS if config.model == "pixel_gtcnn" else list(range(len(CHANNELS)))
         self.pixels = [] if config.model == "pixel_gtcnn" else None
         self.fires, self.targets, self.samples = [], [], {"train": [], "val": [], "test": []}
         self.centre_windows = []  # node-aligned window around the centre 128 x 128 pixels of every fire
-        split_of = {**{year: "train" for year in train_years}, fold.validation_year: "val", fold.test_year: "test"}
+        split_of = {**{year: "train" for year in train_years}, **{year: "val" for year in fold.validation_years}, **{year: "test" for year in fold.test_years}}
         total = torch.zeros(len(_CONTINUOUS), dtype=torch.float64)
         squares, count = torch.zeros_like(total), torch.zeros_like(total)
-        for year in YEARS:
+        for year in fold.years:
             for fire_dir in sorted(path for path in (Path(config.data_dir) / str(year)).iterdir() if path.is_dir()):
                 fire = torch.from_numpy(np.load(fire_dir / "features.npy", mmap_mode="r"))
                 if fire.shape[1] != len(CHANNELS):
@@ -346,7 +352,7 @@ def run(config: TrainConfig) -> dict:
         project=config.wandb_project,
         name=config.run_name,
         group=config.experiment_name,
-        config={**asdict(config), "parameters": parameters, "fold_years": FOLDS[config.fold].name},
+        config={**asdict(config), "parameters": parameters, "fold_years": PROTOCOLS[config.protocol][config.fold].name},
     )
 
     best = {"val_ap": -1.0, "epoch": 0, "state": copy.deepcopy(model.state_dict())}

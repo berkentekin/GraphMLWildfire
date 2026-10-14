@@ -27,12 +27,17 @@ from tqdm import tqdm
 
 from .data.channels import ACTIVE_FIRE_INDEX
 from .data.convert_hdf5 import CENTRE_CROP, _centre_crop_start, _date_from_filename, benchmark_crop, burning_pixels
-from .data.splits import create_year_folds
+from .data.splits import create_wstsplus_folds, create_year_folds
 
 
 YEARS = (2018, 2019, 2020, 2021)
 # The 12 folds of WildfireSpreadTS, in the order of the official code.
 FOLDS = create_year_folds(YEARS)
+# WSTS+ (Lahrichi et al., 2026): the four extra years and the 4 folds of four training, two
+# validation and two test years. Scored like WSTS: centre 128 x 128 window, AP pooled over the fold.
+WSTSPLUS_YEARS = (2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023)
+WSTSPLUS_FOLDS = create_wstsplus_folds()
+PROTOCOLS = {"wsts": FOLDS, "wstsplus": WSTSPLUS_FOLDS}
 # Every model is scored on the targets of the benchmark's 5-day models (target days 5..T-1),
 # as with `n_leading_observations_test_adjustment: 5` in the official code.
 FIRST_INPUT_DAY = 4
@@ -61,6 +66,18 @@ PUBLISHED = [
     ("UTAE", 5, "Multi", 0.459, 0.088, "1.1M"),
     ("UTAE(Res18)", 5, "Veg", 0.478, 0.085, "14.6M"),
     ("UTAE(Res18)", 5, "All", 0.475, 0.091, "14.6M"),
+]
+# Lahrichi et al., Table 5: 4-fold test AP (mean, std) on WSTS+, same feature sets.
+PUBLISHED_WSTSPLUS = [
+    ("Res18-UNet", 1, "Veg", 0.349, 0.109, "14.3M"),
+    ("Res18-UNet", 1, "Multi", 0.351, 0.105, "14.3M"),
+    ("Res18-UNet", 1, "All", 0.351, 0.122, "14.3M"),
+    ("Res50-UNet", 1, "Veg", 0.345, 0.096, "32.5M"),
+    ("Res50-UNet", 1, "Multi", 0.353, 0.122, "32.5M"),
+    ("Res50-UNet", 1, "All", 0.351, 0.122, "32.5M"),
+    ("UTAE(Res18)", 5, "Veg", 0.354, 0.113, "14.6M"),
+    ("UTAE(Res18)", 5, "Multi", 0.363, 0.129, "14.6M"),
+    ("UTAE(Res18)", 5, "All", 0.350, 0.117, "14.6M"),
 ]
 LAHRICHI_URL = "https://arxiv.org/abs/2502.12003v3"
 
@@ -132,18 +149,26 @@ def pixel_persistence_ap(raw_dir: str | Path, year: int) -> float:
 
 
 def summary(results_file: str | Path) -> None:
-    """Print a markdown leaderboard under the Lahrichi et al. protocol: their Table 2, then every
-    experiment in `results_file` as mean ± sample std over its folds."""
+    """Print the markdown leaderboards under the Lahrichi et al. protocol: their Table 2 (WSTS) and
+    Table 5 (WSTS+), each followed by every experiment of that protocol in `results_file` as
+    mean ± sample std over its folds."""
 
-    runs = defaultdict(dict)
+    runs = {protocol: defaultdict(dict) for protocol in PROTOCOLS}
     if Path(results_file).exists():
         for line in Path(results_file).read_text().splitlines():
             run = json.loads(line)
-            runs[run["experiment_name"]][(run["fold"], run["seed"])] = run
+            runs[run.get("protocol", "wsts")][run["experiment_name"]][(run["fold"], run["seed"])] = run
+    for protocol, published in (("wsts", PUBLISHED), ("wstsplus", PUBLISHED_WSTSPLUS)):
+        if protocol != "wsts":
+            print()
+        _leaderboard(published, len(PROTOCOLS[protocol]), runs[protocol])
+
+
+def _leaderboard(published: list, folds: int, runs: dict) -> None:
     print("| Model | Days | Features | Params | Folds | AP (centre 128) | F1 | IoU |")
     print("| --- | --- | --- | --- | --- | --- | --- | --- |")
-    for name, days, features, mean, std, params in PUBLISHED:
-        print(f"| [Lahrichi]({LAHRICHI_URL}): {name} | {days} | {features} | {params} | 12 | {mean:.3f} ± {std:.3f} | | |")
+    for name, days, features, mean, std, params in published:
+        print(f"| [Lahrichi]({LAHRICHI_URL}): {name} | {days} | {features} | {params} | {folds} | {mean:.3f} ± {std:.3f} | | |")
     for name, by_fold in runs.items():
         first = next(iter(by_fold.values()))
         cells = []
@@ -179,7 +204,7 @@ def verify() -> None:
     folds = np.array(LAHRICHI_UTAE_RES18_VEG)
     print(f"Lahrichi UTAE(Res18) Veg per-fold values: mean {folds.mean():.3f}, std ddof=1 {folds.std(ddof=1):.3f}, "
           f"ddof=0 {folds.std():.3f} (published 0.478 ± 0.085)")
-    persistence = np.array([PUBLISHED_PERSISTENCE[fold.test_year] for fold in FOLDS])
+    persistence = np.array([PUBLISHED_PERSISTENCE[year] for fold in FOLDS for year in fold.test_years])
     print(f"Gerard persistence per-fold values: mean {persistence.mean():.3f}, std ddof=0 {persistence.std():.3f}, "
           f"ddof=1 {persistence.std(ddof=1):.3f} (published 0.193 ± 0.065)")
 
@@ -199,7 +224,7 @@ def main() -> None:
     per_year = {year: pixel_persistence_ap(args.raw_dir, year) for year in YEARS}
     for year, value in per_year.items():
         print(f"{year}: AP {value:.3f} (published {PUBLISHED_PERSISTENCE[year]:.3f})")
-    folds = [per_year[fold.test_year] for fold in FOLDS]
+    folds = [per_year[year] for fold in FOLDS for year in fold.test_years]
     print(f"12-fold mean: {np.mean(folds):.3f} ± {np.std(folds):.3f} (published 0.193 ± 0.065)")
 
 

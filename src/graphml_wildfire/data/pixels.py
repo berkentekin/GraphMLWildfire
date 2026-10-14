@@ -16,7 +16,7 @@ import rasterio
 from tqdm import tqdm
 
 from .channels import ACTIVE_FIRE_INDEX, BASE_FEATURE_NAMES
-from .convert_hdf5 import CENTRE_CROP, _centre_crop_start, _date_from_filename, benchmark_crop, burning_pixels
+from .convert_hdf5 import CENTRE_CROP, _centre_crop_start, _date_from_filename, benchmark_crop, burning_pixels, detection_time_hhmm
 
 # Native 375 m bands stored per pixel besides the fire mask.
 BANDS = ("ndvi", "viirs_m11", "viirs_i2", "viirs_i1", "evi2")
@@ -31,7 +31,7 @@ def build_one(task: tuple[Path, Path]) -> None:
     for path in sorted(fire_dir.glob("*.tif"), key=_date_from_filename):
         with rasterio.open(path) as source:
             read = source.read(band_indices + [ACTIVE_FIRE_INDEX + 1]).astype(np.float32)
-        active_fire = read[-1]
+        active_fire = detection_time_hhmm(read[-1])
         height, width = active_fire.shape
         rows, cols = benchmark_crop(height, width)
         burning = burning_pixels(active_fire[rows, cols])
@@ -39,6 +39,8 @@ def build_one(task: tuple[Path, Path]) -> None:
         times.append(np.where(burning, np.nan_to_num(active_fire[rows, cols]) / 2400.0, 0.0).astype(np.float16))
         for band, image in zip(BANDS, read[:-1]):
             values[band].append(image[rows, cols].astype(np.float16))
+    if not masks:
+        return  # a directory without rasters, converted to no node grid either
     # The centre window in cropped-pixel coordinates (it always lies inside the benchmark crop).
     centre = (_centre_crop_start(height, CENTRE_CROP) - rows.start, _centre_crop_start(width, CENTRE_CROP) - cols.start)
     output_path.parent.mkdir(parents=True, exist_ok=True)

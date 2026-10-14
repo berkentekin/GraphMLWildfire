@@ -6,6 +6,7 @@ from .wildfirespreadts import (
 from .splits import (
     YearFold,
     create_fire_manifest,
+    create_wstsplus_folds,
     create_year_folds,
     read_fire_manifest,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "find_fire_pairs",
     "YearFold",
     "create_fire_manifest",
+    "create_wstsplus_folds",
     "create_year_folds",
     "read_fire_manifest",
     "FeatureStatistics",

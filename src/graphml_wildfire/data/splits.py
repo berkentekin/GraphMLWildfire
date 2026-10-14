@@ -12,25 +12,28 @@ import h5py
 
 @dataclass(frozen=True)
 class YearFold:
-    train_years: tuple[int, int]
-    validation_year: int
-    test_year: int
+    train_years: tuple[int, ...]
+    validation_years: tuple[int, ...]
+    test_years: tuple[int, ...]
 
     def __post_init__(self) -> None:
-        years = (*self.train_years, self.validation_year, self.test_year)
-        if len(set(years)) != 4:
+        if len(set(self.years)) != len(self.years):
             raise ValueError("Training, validation, and test years must be distinct")
 
     @property
+    def years(self) -> tuple[int, ...]:
+        return (*self.train_years, *self.validation_years, *self.test_years)
+
+    @property
     def name(self) -> str:
-        train = "_".join(str(year) for year in self.train_years)
-        return f"train_{train}_val_{self.validation_year}_test_{self.test_year}"
+        parts = (("train", self.train_years), ("val", self.validation_years), ("test", self.test_years))
+        return "_".join(f"{label}_" + "_".join(str(year) for year in years) for label, years in parts)
 
 
 def create_year_folds(
     years: Iterable[int] = (2018, 2019, 2020, 2021),
 ) -> list[YearFold]:
-    """Create the 12 ordered two-train, one-validation, one-test folds.
+    """Create the 12 ordered two-train, one-validation, one-test folds of WildfireSpreadTS.
 
     The order matches the official WildfireSpreadTS code (FireSpreadDataModule.split_fires),
     so fold IDs refer to the same years as in the published papers.
@@ -44,8 +47,24 @@ def create_year_folds(
     for train_years in combinations(years, 2):
         held_out = [year for year in years if year not in train_years]
         for validation_year, test_year in permutations(held_out, 2):
-            folds.append(YearFold(train_years, validation_year, test_year))  # type: ignore
+            folds.append(YearFold(train_years, (validation_year,), (test_year,)))
     return folds
+
+
+# The four folds of WSTS+ (Lahrichi et al., 2026; FireSpreadDataModule.split_fires with
+# additional_data=True): four training years, two validation years, two test years, in their order.
+WSTSPLUS_SPLITS = (
+    ((2016, 2017, 2020, 2021), (2018, 2019), (2022, 2023)),
+    ((2018, 2019, 2022, 2023), (2020, 2021), (2016, 2017)),
+    ((2016, 2017, 2020, 2021), (2022, 2023), (2018, 2019)),
+    ((2018, 2019, 2022, 2023), (2016, 2017), (2020, 2021)),
+)
+
+
+def create_wstsplus_folds() -> list[YearFold]:
+    """The 4 folds of WSTS+, 2016-2023, in the order of the official code."""
+
+    return [YearFold(train, validation, test) for train, validation, test in WSTSPLUS_SPLITS]
 
 
 def discover_fires(data_dir: str | Path) -> dict[int, list[str]]:
