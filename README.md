@@ -326,7 +326,8 @@ uv run python -m graphml_wildfire.smoke --data-dir data/cache/b2 --precision aut
 ```
 
 This tests all three modes with the default architecture. It saves diagnostics
-to `results/smoke.json`, not benchmark scores. If FP16 gradients overflow during
+to `results/smoke.json`, not benchmark scores. Add `--graph-modes none uniform`
+to test only the two fixed/no-graph variants. If FP16 gradients overflow during
 the smoke test, retry with `--precision fp32` and use the same precision for all
 compared runs.
 
@@ -347,7 +348,7 @@ First commit/push `wishaal/pixel-time-ablations-kaggle` so its private-repositor
 clone cell can find the new code. Attach the extracted cache dataset, enable a
 GPU/Internet, and add a read-only `GITHUB_TOKEN` through Kaggle Secrets. The
 notebook reuses Kaggle's GPU PyTorch, disables W&B uploads, checks the cache,
-smoke-tests all three modes, and exports per-fold metrics, paired AP differences,
+smoke-tests and trains only no graph and uniform graph, and exports per-fold metrics, paired AP differences,
 and best checkpoints under `/kaggle/working`. Full training is opt-in; defaults
 are one fold, one seed, 30 epochs per mode. Do not equate smoke diagnostics or a
 single fold with a completed 12-fold benchmark.

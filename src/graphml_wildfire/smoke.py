@@ -16,7 +16,9 @@ from .models.gtcnn import GRAPH_MODES
 from .train import FireData, TrainConfig, autocast_context, build_model, forward, predict, resolve_precision
 
 
-def smoke(config: TrainConfig) -> list[dict]:
+def smoke(config: TrainConfig, modes: tuple[str, ...] = GRAPH_MODES) -> list[dict]:
+    if not modes or any(mode not in GRAPH_MODES for mode in modes):
+        raise ValueError(f"Expected one or more graph modes from {GRAPH_MODES}, got {modes}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     precision = resolve_precision(config.precision, device)
     data = FireData(config)
@@ -24,7 +26,7 @@ def smoke(config: TrainConfig) -> list[dict]:
         raise ValueError("Smoke test requires nonempty training and validation splits")
     data.samples["val"] = data.samples["val"][:1]
     results = []
-    for mode in GRAPH_MODES:
+    for mode in modes:
         torch.manual_seed(config.seed)
         np.random.seed(config.seed)
         variant = replace(config, graph_mode=mode, compile=0, eval_batch_size=1)
@@ -76,15 +78,16 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--crop", type=int, default=32)
     parser.add_argument("--output", default="results/smoke.json")
+    parser.add_argument("--graph-modes", nargs="+", choices=GRAPH_MODES, default=GRAPH_MODES)
     args = parser.parse_args()
     results = smoke(TrainConfig(
         data_dir=args.data_dir, precision=args.precision, fold=args.fold,
         batch_size=args.batch_size, crop=args.crop, compile=0,
-    ))
+    ), modes=tuple(args.graph_modes))
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(results, indent=2))
-    print("All three modes passed. Smoke losses are NOT benchmark results.")
+    print(f"Selected modes passed: {', '.join(args.graph_modes)}. Smoke losses are NOT benchmark results.")
 
 
 if __name__ == "__main__":

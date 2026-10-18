@@ -1,3 +1,4 @@
+import ast
 import gc
 import json
 import tempfile
@@ -200,10 +201,33 @@ class CacheIntegrationTests(unittest.TestCase):
             ))
             self.assertEqual([row["graph_mode"] for row in results], list(GRAPH_MODES))
             self.assertTrue(all(row["logits_shape"] == [2, 8, 8] for row in results))
+            selected = smoke(TrainConfig(
+                data_dir=str(root / "cache"), precision="fp32", batch_size=2, crop=4, compile=0,
+            ), modes=("none", "uniform"))
+            self.assertEqual([row["graph_mode"] for row in selected], ["none", "uniform"])
             gc.collect()
 
 
 class NotebookTests(unittest.TestCase):
+    def test_notebook_smoke_runs_only_selected_modes(self):
+        path = Path(__file__).resolve().parents[1] / "notebooks" / "kaggle_pixel_time_ablations.ipynb"
+        cells = {cell["id"]: "".join(cell["source"]) for cell in json.loads(path.read_text())["cells"]}
+        settings = ast.parse(cells["settings"])
+        modes = next(ast.literal_eval(node.value) for node in settings.body
+                     if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "MODES" for t in node.targets))
+        self.assertEqual(modes, ["none", "uniform"])
+        with tempfile.TemporaryDirectory() as temp, patch("subprocess.run") as command:
+            namespace = {
+                "OUTPUT_DIR": Path(temp), "subprocess": __import__("subprocess"), "sys": __import__("sys"),
+                "DATA_DIR": Path(temp), "REPO_DIR": Path(temp), "PRECISION": "fp32",
+                "FOLDS_TO_RUN": [0], "BATCH_SIZE": 4, "MODES": modes,
+            }
+            exec(compile(cells["smoke"], "<smoke cell>", "exec"), namespace)
+            args = command.call_args.args[0]
+            self.assertEqual(args[args.index("--graph-modes") + 1:], modes)
+            self.assertNotIn("learned", args)
+            self.assertEqual(namespace["SMOKE_SETTINGS"][-1], tuple(modes))
+
     def test_notebook_structure_and_python_syntax(self):
         path = Path(__file__).resolve().parents[1] / "notebooks" / "kaggle_pixel_time_ablations.ipynb"
         notebook = json.loads(path.read_text(encoding="utf-8"))
