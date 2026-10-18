@@ -209,23 +209,57 @@ class CacheIntegrationTests(unittest.TestCase):
 
 
 class NotebookTests(unittest.TestCase):
+    def test_notebook_plans_twelve_no_graph_runs_at_batch_32(self):
+        repo = Path(__file__).resolve().parents[1]
+        notebook = json.loads((repo / "notebooks" / "kaggle_pixel_time_ablations.ipynb").read_text())
+        cells = {cell["id"]: "".join(cell["source"]) for cell in notebook["cells"]}
+        with tempfile.TemporaryDirectory() as temp, patch("subprocess.run") as command:
+            root = Path(temp)
+            namespace = {
+                "OUTPUT_DIR": root, "REPO_DIR": repo, "DATA_DIR": root / "cache",
+                "json": json, "FOLDS_TO_RUN": list(range(12)), "SEEDS": [0], "MODES": ["none"],
+                "EPOCHS": 30, "BATCH_SIZE": 32, "EVAL_BATCH_SIZE": 1, "PRECISION": "auto",
+                "RUN_TRAINING": True, "SMOKE_PASSED": True,
+                "subprocess": __import__("subprocess"), "sys": __import__("sys"),
+                "SMOKE_SETTINGS": (str(root / "cache"), "auto", 0, 32, ("none",)),
+            }
+            exec(compile(cells["reference-check"], "<reference cell>", "exec"), namespace)
+            self.assertEqual(len(namespace["REFERENCE_RUNS"]), 12)
+            self.assertTrue((root / "learned_reference_runs.json").is_file())
+            exec(compile(cells["training"], "<training cell>", "exec"), namespace)
+            self.assertEqual(command.call_count, 12)
+            for fold, call in enumerate(command.call_args_list):
+                args = call.args[0]
+                self.assertEqual(args[args.index("--graph-mode") + 1], "none")
+                self.assertEqual(args[args.index("--fold") + 1], str(fold))
+                self.assertEqual(args[args.index("--batch-size") + 1], "32")
+                self.assertEqual(args[args.index("--epochs") + 1], "30")
+                self.assertEqual(args[args.index("--seed") + 1], "0")
+            namespace["BATCH_SIZE"] = 4
+            with self.assertRaisesRegex(ValueError, "batch_size"):
+                exec(compile(cells["reference-check"], "<reference cell>", "exec"), namespace)
+
     def test_notebook_smoke_runs_only_selected_modes(self):
         path = Path(__file__).resolve().parents[1] / "notebooks" / "kaggle_pixel_time_ablations.ipynb"
         cells = {cell["id"]: "".join(cell["source"]) for cell in json.loads(path.read_text())["cells"]}
         settings = ast.parse(cells["settings"])
         modes = next(ast.literal_eval(node.value) for node in settings.body
                      if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "MODES" for t in node.targets))
-        self.assertEqual(modes, ["none", "uniform"])
+        self.assertEqual(modes, ["none"])
+        self.assertIn("FOLDS_TO_RUN = list(range(12))", cells["settings"])
+        self.assertIn("BATCH_SIZE = 32", cells["settings"])
         with tempfile.TemporaryDirectory() as temp, patch("subprocess.run") as command:
             namespace = {
                 "OUTPUT_DIR": Path(temp), "subprocess": __import__("subprocess"), "sys": __import__("sys"),
                 "DATA_DIR": Path(temp), "REPO_DIR": Path(temp), "PRECISION": "fp32",
-                "FOLDS_TO_RUN": [0], "BATCH_SIZE": 4, "MODES": modes,
+                "FOLDS_TO_RUN": list(range(12)), "BATCH_SIZE": 32, "MODES": modes,
             }
             exec(compile(cells["smoke"], "<smoke cell>", "exec"), namespace)
             args = command.call_args.args[0]
             self.assertEqual(args[args.index("--graph-modes") + 1:], modes)
             self.assertNotIn("learned", args)
+            self.assertNotIn("uniform", args)
+            self.assertEqual(args[args.index("--batch-size") + 1], "32")
             self.assertEqual(namespace["SMOKE_SETTINGS"][-1], tuple(modes))
 
     def test_notebook_structure_and_python_syntax(self):
