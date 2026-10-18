@@ -294,3 +294,66 @@ uv run python -m graphml_wildfire.benchmark summary
 ```
 
 Each fold needs ~12 GB of GPU memory. Checkpoints go to `data/checkpoints/`; `uv run python -m graphml_wildfire.evaluate data/checkpoints/<run>.pt` re-scores one under the protocol.
+
+### Matched graph ablations and Kaggle
+
+Use `--model pixel_gtcnn --graph-mode MODE` to change only the graph-neighbour
+operations inside the pixel-graph-time architecture:
+
+| Mode | Spatial graph operator |
+| --- | --- |
+| `learned` (default) | Original state-conditioned, multi-head attention. |
+| `uniform` | Every valid incoming neighbour has weight `1 / degree`; invalid edges and isolated-node rows are zero. No attention network. |
+| `none` | No current-day or previous-day neighbour messages. Renormalizes the product mixture over self and same-node temporal messages (self only for single-day windows). No attention network. |
+
+All modes retain the pixel CNN encoder/decoder, node projection, filter taps,
+normalization, and temporal processing. The no-graph model still has spatial
+context from the pixel CNN. Uniform fixes the spatial weights, not the learned
+self/spatial/temporal mixture. Parameter counts are reported because removing
+attention removes parameters. Learned mode preserves the original product shift.
+The original zero-padded temporal boundary is retained.
+
+`--precision auto` uses native BF16 on supporting CUDA GPUs, FP16 with gradient
+scaling on GPUs such as the Tesla T4, and FP32 on CPU. Explicit `fp32`, `fp16`,
+and `bf16` are supported; incompatible selections fail explicitly. Gradient
+clipping happens after unscaling FP16 gradients. Saved run records include the
+requested and resolved precision; re-scoring supports `--precision` overrides.
+
+Run a one-batch training/whole-fire validation smoke test on your real cache:
+
+```bash
+uv run python -m graphml_wildfire.smoke --data-dir data/cache/b2 --precision auto
+```
+
+This tests all three modes with the default architecture. It saves diagnostics
+to `results/smoke.json`, not benchmark scores. If FP16 gradients overflow during
+the smoke test, retry with `--precision fp32` and use the same precision for all
+compared runs.
+
+Then train each mode with matched settings, for example:
+
+```bash
+uv run python -m graphml_wildfire.train --graph-mode none --precision auto --compile 0 --batch-size 4 --eval-batch-size 1 --fold 0
+uv run python -m graphml_wildfire.train --graph-mode uniform --precision auto --compile 0 --batch-size 4 --eval-batch-size 1 --fold 0
+uv run python -m graphml_wildfire.train --graph-mode learned --precision auto --compile 0 --batch-size 4 --eval-batch-size 1 --fold 0
+```
+
+The best weights and a configuration JSON are saved whenever validation AP
+improves. These are not full training-resume checkpoints. Completed runs append
+AP, F1, IoU, parameter count, and timing to the results JSONL as before.
+
+For Kaggle, import [the notebook](notebooks/kaggle_pixel_time_ablations.ipynb).
+First commit/push `berken/pixel-time-ablations-kaggle` so its private-repository
+clone cell can find the new code. Attach the extracted cache dataset, enable a
+GPU/Internet, and add a read-only `GITHUB_TOKEN` through Kaggle Secrets. The
+notebook reuses Kaggle's GPU PyTorch, disables W&B uploads, checks the cache,
+smoke-tests all three modes, and exports per-fold metrics, paired AP differences,
+and best checkpoints under `/kaggle/working`. Full training is opt-in; defaults
+are one fold, one seed, 30 epochs per mode. Do not equate smoke diagnostics or a
+single fold with a completed 12-fold benchmark.
+
+Local CPU verification (synthetic cache; no real-data accuracy claims):
+
+```bash
+python -m unittest discover -s tests -p test_graph_ablations.py -v
+```

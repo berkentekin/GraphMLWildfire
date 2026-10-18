@@ -1,6 +1,8 @@
-"""Graph-time convolutional network on a product graph (Isufi & Mazzola, 2021) whose spatial
-shift operator is learned: attention over the 8-neighbour stencil, recomputed from the node
-states for every node, day and layer.
+"""Graph-time convolutional network on a product graph (Isufi & Mazzola, 2021).
+
+By default the spatial shift is learned attention over the 8-neighbour stencil,
+recomputed for every node, day and layer. Ablations fix it to uniform neighbour
+weights or remove neighbour messages while retaining same-node temporal shifts.
 
 Time is a directed path graph (day t-1 -> day t), so information only flows forward in time.
 """
@@ -9,6 +11,8 @@ import torch
 from torch import nn
 
 from ..graphs import apply_shift, neighbour_views, pair_validity, stencil_offsets
+
+GRAPH_MODES = ("learned", "uniform", "none")
 
 
 class NodeNorm(nn.Module):
@@ -68,34 +72,56 @@ class GraphTimeLayer(nn.Module):
     and the four weights s = softmax(s_global + W_gate x_i) are chosen per node from its state.
     """
 
-    def __init__(self, channels: int, taps: int, heads: int, offsets: list[tuple[int, int]], dropout: float):
+    def __init__(self, channels: int, taps: int, heads: int, offsets: list[tuple[int, int]], dropout: float,
+                 graph_mode: str = "learned"):
         super().__init__()
+        if graph_mode not in GRAPH_MODES:
+            raise ValueError(f"Unknown graph_mode: {graph_mode}")
+        if heads < 1 or channels % heads:
+            raise ValueError("channels must be divisible by a positive number of heads")
+        self.graph_mode, self.heads = graph_mode, heads
         self.taps, self.offsets = taps, offsets
         self.mix = nn.Parameter(torch.tensor([0.0, 1.0, 1.0, 1.0]))
         # Per-node correction to the mix; starts at zero so the global mix is the prior.
         self.gate = nn.Conv2d(channels, 4, 1)
         nn.init.zeros_(self.gate.weight)
         nn.init.zeros_(self.gate.bias)
-        self.attention = EdgeAttention(channels, heads, offsets)
+        self.attention = EdgeAttention(channels, heads, offsets) if graph_mode == "learned" else None
         self.filter = nn.Conv2d(channels * (taps + 1), channels, 1)
         self.norm = NodeNorm(channels)
         self.dropout = nn.Dropout(dropout)
 
-    def product_shift(self, state: torch.Tensor, weights: torch.Tensor, days: int) -> torch.Tensor:
+    def product_shift(self, state: torch.Tensor, weights: torch.Tensor | None, days: int) -> torch.Tensor:
         """S_x X for node signals [B * days, C, H, W]."""
 
-        mix = torch.softmax(self.mix[None, :, None, None] + self.gate(state).float(), dim=1).to(state.dtype)
-        spatial = apply_shift(state, weights.to(state.dtype), self.offsets)
-        out = mix[:, 0:1] * state + mix[:, 1:2] * spatial
+        logits = self.mix[None, :, None, None] + self.gate(state).float()
+        if self.graph_mode == "none":
+            active = logits.new_tensor([True, False, days > 1, False], dtype=torch.bool)
+            logits = logits.masked_fill(~active[None, :, None, None], -torch.inf)
+        mix = torch.softmax(logits, dim=1).to(state.dtype)
+        out = mix[:, 0:1] * state
+        spatial = None
+        if self.graph_mode != "none":
+            if weights is None:
+                raise ValueError("Spatial graph modes require stencil weights")
+            spatial = apply_shift(state, weights.to(state.dtype), self.offsets)
+            out = out + mix[:, 1:2] * spatial
         if days > 1:
             def yesterday(values: torch.Tensor) -> torch.Tensor:
                 values = values.unflatten(0, (-1, days))
                 return torch.cat([torch.zeros_like(values[:, :1]), values[:, :-1]], dim=1).flatten(0, 1)
-            out = out + mix[:, 2:3] * yesterday(state) + mix[:, 3:4] * yesterday(spatial)
+            out = out + mix[:, 2:3] * yesterday(state)
+            if spatial is not None:
+                out = out + mix[:, 3:4] * yesterday(spatial)
         return out
 
     def forward(self, state: torch.Tensor, pair_valid: torch.Tensor, days: int) -> torch.Tensor:
-        weights = self.attention(state, pair_valid)
+        weights = None
+        if self.attention is not None:
+            weights = self.attention(state, pair_valid)
+        elif self.graph_mode == "uniform":
+            uniform = pair_valid / pair_valid.sum(dim=1, keepdim=True).clamp_min(1)
+            weights = uniform[:, None].expand(-1, self.heads, -1, -1, -1)
         powers = [state]
         for _ in range(self.taps):
             powers.append(self.product_shift(powers[-1], weights, days))
@@ -105,11 +131,12 @@ class GraphTimeLayer(nn.Module):
 class GraphTimeCNN(nn.Module):
     """Node states of the last day of a window of daily node features."""
 
-    def __init__(self, in_channels: int, hidden: int = 64, layers: int = 4, taps: int = 3, heads: int = 4, dropout: float = 0.1):
+    def __init__(self, in_channels: int, hidden: int = 64, layers: int = 4, taps: int = 3, heads: int = 4,
+                 dropout: float = 0.1, graph_mode: str = "learned"):
         super().__init__()
         self.offsets = stencil_offsets(hops=1)
         self.encoder = nn.Conv2d(in_channels, hidden, 1)
-        self.layers = nn.ModuleList(GraphTimeLayer(hidden, taps, heads, self.offsets, dropout) for _ in range(layers))
+        self.layers = nn.ModuleList(GraphTimeLayer(hidden, taps, heads, self.offsets, dropout, graph_mode) for _ in range(layers))
 
     def forward(self, features: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
         """`features` [B, T, C, H, W], `valid` [B, H, W] (1 on real nodes). Returns [B, hidden, H, W]."""

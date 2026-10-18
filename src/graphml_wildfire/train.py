@@ -19,6 +19,7 @@ import hashlib
 import json
 import time
 import warnings
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from .data.mmap import TARGETS
 from .data.patches import CHANNEL_INDEX, CHANNELS, CONTINUOUS, MASKS
 from .data.pixels import PIXEL_CHANNELS
 from .models import ConvNet, NodeMLP, Persistence, PixelGraphTimeCNN
+from .models.gtcnn import GRAPH_MODES
 
 
 MODELS = ("pixel_gtcnn", "cnn", "mlp", "logreg", "persistence")
@@ -49,6 +51,8 @@ _GRAPH_INPUTS = [index for index, name in enumerate(CHANNELS) if name not in MAS
 class TrainConfig:
     experiment_name: str = ""
     model: str = "pixel_gtcnn"
+    graph_mode: str = "learned"  # learned, uniform, none (pixel_gtcnn only)
+    precision: str = "auto"  # auto: BF16 on supported GPUs, FP16 + scaling otherwise; FP32 on CPU
     window: int = 5  # input days
     hidden: int = 64  # node state width
     layers: int = 4  # graph-time layers (pixel_gtcnn) or MLP layers
@@ -76,12 +80,20 @@ class TrainConfig:
     def __post_init__(self) -> None:
         if self.model not in MODELS:
             raise ValueError(f"Unknown model: {self.model}")
+        if self.graph_mode not in GRAPH_MODES:
+            raise ValueError(f"Unknown graph_mode: {self.graph_mode}")
+        if self.model != "pixel_gtcnn" and self.graph_mode != "learned":
+            raise ValueError("graph_mode applies only to pixel_gtcnn")
+        if self.precision not in ("auto", "fp32", "fp16", "bf16"):
+            raise ValueError(f"Unknown precision: {self.precision}")
         if not 1 <= self.window <= FIRST_INPUT_DAY + 1:
             raise ValueError(f"window must be between 1 and {FIRST_INPUT_DAY + 1}")
         if not self.data_dir:
             self.data_dir = f"data/cache/b{self.patch}"
         if not self.experiment_name:
             self.experiment_name = f"{self.model}_w{self.window}_p{self.patch}"
+            if self.graph_mode != "learned":
+                self.experiment_name += f"_{self.graph_mode}"
         if not self.experiment_name.strip():
             raise ValueError("experiment_name must not be empty")
 
@@ -89,6 +101,28 @@ class TrainConfig:
     def run_name(self) -> str:
         digest = hashlib.sha1(json.dumps(asdict(self), sort_keys=True).encode()).hexdigest()[:8]
         return f"{self.experiment_name}_f{self.fold}_s{self.seed}_{digest}"
+
+
+def resolve_precision(precision: str, device: torch.device) -> str:
+    if precision not in ("auto", "fp32", "fp16", "bf16"):
+        raise ValueError(f"Unknown precision: {precision}")
+    if device.type != "cuda":
+        if precision not in ("auto", "fp32"):
+            raise ValueError(f"{precision} requires a CUDA device; use fp32 on CPU")
+        return "fp32"
+    if precision == "auto":
+        return "bf16" if torch.cuda.is_bf16_supported(including_emulation=False) else "fp16"
+    if precision == "bf16" and not torch.cuda.is_bf16_supported(including_emulation=False):
+        raise ValueError("This GPU does not support BF16; use auto, fp16 or fp32")
+    return precision
+
+
+def autocast_context(precision: str):
+    if precision == "fp32":
+        return nullcontext()
+    if precision not in ("fp16", "bf16"):
+        raise ValueError(f"Expected a resolved precision, got {precision}")
+    return torch.autocast("cuda", dtype=torch.float16 if precision == "fp16" else torch.bfloat16)
 
 
 class FireData:
@@ -271,7 +305,8 @@ def build_model(config: TrainConfig, data: FireData) -> nn.Module:
     channels = len(data.input_channels)
     if config.model == "pixel_gtcnn":
         return PixelGraphTimeCNN(channels, len(PIXEL_CHANNELS), config.patch, config.pixel_hidden, config.decoder_hidden,
-                                 hidden=config.hidden, layers=config.layers, taps=config.taps, heads=config.heads, dropout=config.dropout)
+                                 hidden=config.hidden, layers=config.layers, taps=config.taps, heads=config.heads,
+                                 dropout=config.dropout, graph_mode=config.graph_mode)
     if config.model == "cnn":
         return ConvNet(channels, config.window, config.hidden, config.dropout)
     if config.model == "mlp":
@@ -287,11 +322,12 @@ def predict(model: nn.Module, data: FireData, split: str, config: TrainConfig, d
     evaluation region the burning and total pixel counts of those nodes; all flat tensors."""
 
     model.eval()
+    precision = resolve_precision(config.precision, device)
     scores, counts = [], []
     samples = data.samples[split][::stride]
     for start in range(0, len(samples), config.eval_batch_size):
         features, valid, _, regions, pixels = data.batch(samples[start : start + config.eval_batch_size], device, centre_input=centre_input)
-        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
+        with autocast_context(precision):
             logits = forward(model, features, valid, data, pixels)
         if pixels is not None:
             # Pixel labels are 0/1: keep them as uint8 so a whole test year fits in memory.
@@ -313,6 +349,8 @@ def test_metrics(model: nn.Module, data: FireData, config: TrainConfig, device: 
     val_scores, val_regions = predict(model, data, "val", config, device)
     threshold = best_f1_threshold(val_scores, *val_regions["full"])
     val_ap = average_precision(val_scores, *val_regions["full"])
+    if not np.isfinite(val_ap):
+        raise FloatingPointError(f"Non-finite validation AP at epoch {epoch}")
     del val_scores, val_regions  # free the validation year before scoring the test year
     test_scores, test_regions = predict(model, data, "test", config, device)
     full_ap = average_precision(test_scores, *test_regions["full"])
@@ -338,6 +376,8 @@ def run(config: TrainConfig) -> dict:
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    precision = resolve_precision(config.precision, device)
+    print(f"Device: {device}; precision: {precision}; graph mode: {config.graph_mode}", flush=True)
     torch.backends.cudnn.benchmark = True
     data = FireData(config)
     model = build_model(config, data).to(device)
@@ -346,7 +386,7 @@ def run(config: TrainConfig) -> dict:
         project=config.wandb_project,
         name=config.run_name,
         group=config.experiment_name,
-        config={**asdict(config), "parameters": parameters, "fold_years": FOLDS[config.fold].name},
+        config={**asdict(config), "resolved_precision": precision, "parameters": parameters, "fold_years": FOLDS[config.fold].name},
     )
 
     best = {"val_ap": -1.0, "epoch": 0, "state": copy.deepcopy(model.state_dict())}
@@ -356,7 +396,10 @@ def run(config: TrainConfig) -> dict:
     started = time.time()
     if parameters:
         optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay, fused=device.type == "cuda")
+        scaler = torch.amp.GradScaler("cuda", enabled=precision == "fp16")
         steps_per_epoch = len(data.samples["train"]) // config.batch_size
+        if steps_per_epoch < 1:
+            raise ValueError("Not enough training samples for one batch; reduce batch_size")
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer, max_lr=config.lr, total_steps=config.epochs * steps_per_epoch, pct_start=0.1
         )
@@ -371,22 +414,36 @@ def run(config: TrainConfig) -> dict:
                 features, valid, target, _, pixels = data.batch(chosen, device, config.crop, generator)
                 features, valid, target = transform(features, valid, target, *flags)
                 pixels = transform_pixels(pixels, *flags)
-                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
+                with autocast_context(precision):
                     logits = forward(model, features, valid, data, pixels)
                 if pixels is not None:
                     target, valid = pixels["target"], pixels["valid"]
                 # Pixel-level BCE: a node stands for its pixels, a fraction `target` of which burn; the pixel model is scored per pixel.
                 loss = nn.functional.binary_cross_entropy_with_logits(logits.float(), target, weight=valid, reduction="sum") / valid.sum()
+                if not torch.isfinite(loss):
+                    raise FloatingPointError(f"Non-finite training loss at epoch {epoch}, step {step}")
                 optimizer.zero_grad(set_to_none=True)
-                loss.backward()
+                scaler.scale(loss).backward()
                 losses += loss.detach()
+                scaler.unscale_(optimizer)
                 nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                scheduler.step()
+                previous_scale = scaler.get_scale()
+                scaler.step(optimizer)
+                scaler.update()
+                if scaler.get_scale() >= previous_scale:
+                    scheduler.step()
+                else:
+                    warnings.warn(f"FP16 gradient overflow at epoch {epoch}, step {step}; optimizer step skipped")
             val_scores, val_regions = predict(model, data, "val", config, device, config.val_stride)
             val_ap = average_precision(val_scores, *val_regions["full"])
             if val_ap > best["val_ap"]:
                 best = {"val_ap": val_ap, "epoch": epoch, "state": copy.deepcopy(model.state_dict())}
+                checkpoint_dir = Path(config.checkpoint_dir)
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                torch.save(best["state"], checkpoint_dir / f"{config.run_name}.pt")
+                (checkpoint_dir / f"{config.run_name}.json").write_text(
+                    json.dumps({**asdict(config), "resolved_precision": precision, "best_epoch": epoch, "val_ap": val_ap}, indent=2)
+                )
             wandb.log({"epoch": epoch, "train/loss": float((losses / steps_per_epoch).item()), "val/ap": val_ap, "val/best_ap": best["val_ap"]})
             print(f"epoch {epoch:3d} loss {(losses / steps_per_epoch).item():.5f} val AP {val_ap:.4f} (best {best['val_ap']:.4f} @ {best['epoch']}) "
                   f"{time.time() - started:.0f}s", flush=True)
@@ -398,6 +455,7 @@ def run(config: TrainConfig) -> dict:
     result = {
         "run_name": config.run_name,
         **asdict(config),
+        "resolved_precision": precision,
         "parameters": parameters,
         "best_epoch": best["epoch"],
         **test_metrics(model, data, config, device),
