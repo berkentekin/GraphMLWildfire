@@ -343,7 +343,7 @@ improves. These are not full training-resume checkpoints. Completed runs append
 AP, F1, IoU, parameter count, and timing to the results JSONL as before.
 
 For Kaggle, import [the notebook](notebooks/kaggle_pixel_time_ablations.ipynb).
-First commit/push `berken/pixel-time-ablations-kaggle` so its private-repository
+First commit/push `wishaal/pixel-time-ablations-kaggle` so its private-repository
 clone cell can find the new code. Attach the extracted cache dataset, enable a
 GPU/Internet, and add a read-only `GITHUB_TOKEN` through Kaggle Secrets. The
 notebook reuses Kaggle's GPU PyTorch, disables W&B uploads, checks the cache,
