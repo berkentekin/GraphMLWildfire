@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import torch
@@ -213,13 +213,16 @@ class NotebookTests(unittest.TestCase):
         repo = Path(__file__).resolve().parents[1]
         notebook = json.loads((repo / "notebooks" / "kaggle_pixel_time_ablations.ipynb").read_text())
         cells = {cell["id"]: "".join(cell["source"]) for cell in notebook["cells"]}
-        with tempfile.TemporaryDirectory() as temp, patch("subprocess.run") as command:
+        with tempfile.TemporaryDirectory() as temp:
+            command = Mock()
+            snapshot = Mock()
             root = Path(temp)
             namespace = {
                 "OUTPUT_DIR": root, "REPO_DIR": repo, "DATA_DIR": root / "cache",
                 "json": json, "FOLDS_TO_RUN": list(range(12)), "SEEDS": [0], "MODES": ["none"],
                 "EPOCHS": 30, "BATCH_SIZE": 32, "EVAL_BATCH_SIZE": 1, "PRECISION": "auto",
                 "RUN_TRAINING": True, "SMOKE_PASSED": True,
+                "run_logged": command, "snapshot_results": snapshot,
                 "subprocess": __import__("subprocess"), "sys": __import__("sys"),
                 "SMOKE_SETTINGS": (str(root / "cache"), "auto", 0, 32, ("none",)),
             }
@@ -228,6 +231,7 @@ class NotebookTests(unittest.TestCase):
             self.assertTrue((root / "learned_reference_runs.json").is_file())
             exec(compile(cells["training"], "<training cell>", "exec"), namespace)
             self.assertEqual(command.call_count, 12)
+            self.assertEqual(snapshot.call_count, 12)
             for fold, call in enumerate(command.call_args_list):
                 args = call.args[0]
                 self.assertEqual(args[args.index("--graph-mode") + 1], "none")
@@ -238,6 +242,12 @@ class NotebookTests(unittest.TestCase):
             namespace["BATCH_SIZE"] = 4
             with self.assertRaisesRegex(ValueError, "batch_size"):
                 exec(compile(cells["reference-check"], "<reference cell>", "exec"), namespace)
+            namespace["BATCH_SIZE"] = 32
+            namespace["run_logged"] = Mock(side_effect=RuntimeError("training failed"))
+            snapshot.reset_mock()
+            with self.assertRaisesRegex(RuntimeError, "training failed"):
+                exec(compile(cells["training"], "<training cell>", "exec"), namespace)
+            snapshot.assert_called_once()
 
     def test_notebook_smoke_runs_only_selected_modes(self):
         path = Path(__file__).resolve().parents[1] / "notebooks" / "kaggle_pixel_time_ablations.ipynb"
@@ -248,11 +258,13 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual(modes, ["none"])
         self.assertIn("FOLDS_TO_RUN = list(range(12))", cells["settings"])
         self.assertIn("BATCH_SIZE = 32", cells["settings"])
-        with tempfile.TemporaryDirectory() as temp, patch("subprocess.run") as command:
+        with tempfile.TemporaryDirectory() as temp:
+            command = Mock()
             namespace = {
                 "OUTPUT_DIR": Path(temp), "subprocess": __import__("subprocess"), "sys": __import__("sys"),
                 "DATA_DIR": Path(temp), "REPO_DIR": Path(temp), "PRECISION": "fp32",
                 "FOLDS_TO_RUN": list(range(12)), "BATCH_SIZE": 32, "MODES": modes,
+                "run_logged": command,
             }
             exec(compile(cells["smoke"], "<smoke cell>", "exec"), namespace)
             args = command.call_args.args[0]
@@ -261,6 +273,46 @@ class NotebookTests(unittest.TestCase):
             self.assertNotIn("uniform", args)
             self.assertEqual(args[args.index("--batch-size") + 1], "32")
             self.assertEqual(namespace["SMOKE_SETTINGS"][-1], tuple(modes))
+
+    def test_notebook_streams_logs_before_process_exit_and_surfaces_errors(self):
+        import subprocess
+        import sys
+        import os
+
+        path = Path(__file__).resolve().parents[1] / "notebooks" / "kaggle_pixel_time_ablations.ipynb"
+        cells = {cell["id"]: "".join(cell["source"]) for cell in json.loads(path.read_text())["cells"]}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            namespace = {"Path": Path, "subprocess": subprocess, "os": os, "REPO_DIR": root}
+            exec(compile(cells["live-logging"], "<logging cell>", "exec"), namespace)
+            acknowledgement = root / "ack"
+            messages = []
+
+            def receive(message, **kwargs):
+                messages.append(str(message))
+                if "first message" in str(message):
+                    acknowledgement.touch()
+
+            namespace["print"] = receive
+            script = (
+                "import sys,time; from pathlib import Path; "
+                "print('first message', flush=True); "
+                "deadline=time.monotonic()+5\n"
+                "while not Path('ack').exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+                "assert Path('ack').exists(), 'Output was not streamed live'\n"
+                "print('stderr message', file=sys.stderr, flush=True)\n"
+            )
+            log = root / "logs" / "test.log"
+            namespace["run_logged"]([sys.executable, "-u", "-c", script], log)
+            self.assertTrue(acknowledgement.is_file())
+            self.assertIn("first message", log.read_text())
+            self.assertIn("stderr message", log.read_text())
+            self.assertTrue(any("stderr message" in message for message in messages))
+            with self.assertRaises(subprocess.CalledProcessError):
+                namespace["run_logged"](
+                    [sys.executable, "-u", "-c", "print('failure detail'); raise SystemExit(7)"], log,
+                )
+            self.assertIn("failure detail", log.read_text())
 
     def test_notebook_structure_and_python_syntax(self):
         path = Path(__file__).resolve().parents[1] / "notebooks" / "kaggle_pixel_time_ablations.ipynb"

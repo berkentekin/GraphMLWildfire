@@ -358,6 +358,15 @@ the original runs. All 12 folds may exceed one Kaggle session, so preserve
 outputs between sessions. Partial summaries compare only matching finished
 folds and are clearly labelled; smoke diagnostics are not benchmark results.
 
+The notebook explicitly streams training/smoke subprocess stdout and stderr into
+cell output and timestamped files under the output directory's `logs/`. Training
+prints batch progress about once per minute between batches, plus epoch,
+evaluation, cache-loading, and checkpoint messages. Saved-version log display
+can still be delayed by Kaggle; interactive execution shows the streamed cell
+output. The results ZIP is refreshed after each fold and on a normal Python
+error/interrupt. Hard runtime termination can bypass that export, and local
+working files still need to be downloaded or preserved as version outputs.
+
 Local CPU verification (synthetic cache; no real-data accuracy claims):
 
 ```bash

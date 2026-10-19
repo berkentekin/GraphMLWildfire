@@ -141,6 +141,7 @@ class FireData:
         total = torch.zeros(len(_CONTINUOUS), dtype=torch.float64)
         squares, count = torch.zeros_like(total), torch.zeros_like(total)
         for year in YEARS:
+            print(f"Loading cache year {year}; computing training-year statistics where applicable...", flush=True)
             for fire_dir in sorted(path for path in (Path(config.data_dir) / str(year)).iterdir() if path.is_dir()):
                 fire = torch.from_numpy(np.load(fire_dir / "features.npy", mmap_mode="r"))
                 if fire.shape[1] != len(CHANNELS):
@@ -168,6 +169,8 @@ class FireData:
         self.std[_CONTINUOUS] = (squares / count - (total / count) ** 2).clamp_min(0).sqrt().float().numpy() + 1e-6
         self.mean_t = torch.from_numpy(self.mean)[None, None, :, None, None]
         self.std_t = torch.from_numpy(self.std)[None, None, :, None, None]
+        print(f"Cache ready: {len(self.fires)} fires; samples "
+              + ", ".join(f"{split}={len(samples)}" for split, samples in self.samples.items()), flush=True)
 
     def batch(self, samples: list[tuple[int, int]], device: torch.device, crop: int = 0, generator: torch.Generator | None = None, centre_input: bool = False):
         """Return features [B, T, C, H, W] (NaN where missing), valid [B, H, W], target [B, H, W],
@@ -325,6 +328,8 @@ def predict(model: nn.Module, data: FireData, split: str, config: TrainConfig, d
     precision = resolve_precision(config.precision, device)
     scores, counts = [], []
     samples = data.samples[split][::stride]
+    print(f"Evaluating {split}: {len(samples)} samples; centre_input={centre_input}", flush=True)
+    last_report = time.monotonic()
     for start in range(0, len(samples), config.eval_batch_size):
         features, valid, _, regions, pixels = data.batch(samples[start : start + config.eval_batch_size], device, centre_input=centre_input)
         with autocast_context(precision):
@@ -336,6 +341,10 @@ def predict(model: nn.Module, data: FireData, split: str, config: TrainConfig, d
         keep = valid > 0
         scores.append(logits.float()[keep].cpu())
         counts.append({name: (fire[keep].cpu(), total[keep].cpu()) for name, (fire, total) in regions.items()})
+        done = min(start + config.eval_batch_size, len(samples))
+        if start == 0 or done == len(samples) or time.monotonic() - last_report >= 60:
+            print(f"Evaluating {split}: {done}/{len(samples)} samples; centre_input={centre_input}", flush=True)
+            last_report = time.monotonic()
     regions = {
         name: (torch.cat([batch[name][0] for batch in counts]), torch.cat([batch[name][1] for batch in counts]))
         for name in counts[0]
@@ -405,6 +414,8 @@ def run(config: TrainConfig) -> dict:
         )
         generator = torch.Generator().manual_seed(config.seed)
         for epoch in range(1, config.epochs + 1):
+            print(f"Fold {config.fold} epoch {epoch}/{config.epochs}: training {steps_per_epoch} batches", flush=True)
+            last_report = time.monotonic()
             model.train()
             order = torch.randperm(len(data.samples["train"]), generator=generator).tolist()
             losses = torch.zeros((), device=device)
@@ -434,6 +445,10 @@ def run(config: TrainConfig) -> dict:
                     scheduler.step()
                 else:
                     warnings.warn(f"FP16 gradient overflow at epoch {epoch}, step {step}; optimizer step skipped")
+                if step == 0 or step + 1 == steps_per_epoch or time.monotonic() - last_report >= 60:
+                    print(f"Fold {config.fold} epoch {epoch}/{config.epochs} batch {step + 1}/{steps_per_epoch} "
+                          f"mean loss {(losses / (step + 1)).item():.5f}; elapsed {time.time() - started:.0f}s", flush=True)
+                    last_report = time.monotonic()
             val_scores, val_regions = predict(model, data, "val", config, device, config.val_stride)
             val_ap = average_precision(val_scores, *val_regions["full"])
             if val_ap > best["val_ap"]:
@@ -444,6 +459,7 @@ def run(config: TrainConfig) -> dict:
                 (checkpoint_dir / f"{config.run_name}.json").write_text(
                     json.dumps({**asdict(config), "resolved_precision": precision, "best_epoch": epoch, "val_ap": val_ap}, indent=2)
                 )
+                print(f"Saved best checkpoint: {checkpoint_dir / config.run_name}.pt", flush=True)
             wandb.log({"epoch": epoch, "train/loss": float((losses / steps_per_epoch).item()), "val/ap": val_ap, "val/best_ap": best["val_ap"]})
             print(f"epoch {epoch:3d} loss {(losses / steps_per_epoch).item():.5f} val AP {val_ap:.4f} (best {best['val_ap']:.4f} @ {best['epoch']}) "
                   f"{time.time() - started:.0f}s", flush=True)
@@ -468,6 +484,7 @@ def run(config: TrainConfig) -> dict:
     results_file.parent.mkdir(parents=True, exist_ok=True)
     with results_file.open("a") as output:
         output.write(json.dumps(result) + "\n")
+    print(f"Saved completed-fold metrics: {results_file}", flush=True)
     print(f"{config.run_name}: val AP {result['val_ap']:.4f} test AP {result['test_ap']:.4f} "
           f"(centre128 {result['test_ap_centre128']:.4f}) F1 {result['test_f1']:.4f} IoU {result['test_iou']:.4f} "
           f"(tuned F1 {result['test_f1_tuned']:.4f} IoU {result['test_iou_tuned']:.4f})")
