@@ -348,7 +348,7 @@ First commit/push `wishaal/pixel-time-ablations-kaggle` so its private-repositor
 clone cell can find the new code. Attach the extracted cache dataset, enable a
 GPU/Internet, and add a read-only `GITHUB_TOKEN` through Kaggle Secrets. The
 notebook reuses Kaggle's GPU PyTorch, disables W&B uploads, checks the cache,
-smoke-tests and trains only no graph, and exports per-fold metrics, differences
+smoke-tests and trains only uniform graph, and exports per-fold metrics, differences
 against the recorded learned-model results on matching folds/seeds, and best
 checkpoints under `/kaggle/working`. Training is opt-in; defaults are folds
 0 and 3 only, seed 0, 30 epochs, and training batch 32 to match Marcin's recorded
@@ -358,6 +358,9 @@ the original runs. Even two folds may exceed one Kaggle session, so preserve
 outputs between sessions. This is not the full 12-fold benchmark.
 Partial summaries compare only matching finished
 folds and are clearly labelled; smoke diagnostics are not benchmark results.
+Uniform runs use `/kaggle/working/pixel_time_uniform` and a separate results ZIP
+so they do not overwrite earlier no-graph outputs. Download those earlier
+outputs before ending their session.
 
 The notebook explicitly streams training/smoke subprocess stdout and stderr into
 cell output and timestamped files under the output directory's `logs/`. Training
