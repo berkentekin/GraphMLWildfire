@@ -1,7 +1,7 @@
-"""Export GAT attention on random held-out WildfireSpreadTS fires.
+"""Export GAT attention and all model inputs on random held-out WildfireSpreadTS fires.
 
 Run from the repository root, e.g.:
-  python scripts/extract_fire_attention.py --fold 0 --seed 1 --n-fires 10
+  uv run python scripts/extract_fire_attention.py --fold 0 --seed 1 --n-fires 10
 
 The output is one compressed NPZ per sampled fire/window, plus manifest.json.
 """
@@ -58,6 +58,20 @@ def main():
         raise RuntimeError('No EdgeAttention modules found. Check your model implementation.')
     print('Attention modules:', [name for name, _ in attention_modules], flush=True)
 
+    # CHANNEL_INDEX maps channel names to their indices in the model input tensor.
+    channel_names = [None] * len(CHANNEL_INDEX)
+    for name, index in CHANNEL_INDEX.items():
+        if not 0 <= index < len(channel_names) or channel_names[index] is not None:
+            raise ValueError(f'Invalid or duplicate channel index {index} for {name!r}')
+        channel_names[index] = name
+    if any(name is None for name in channel_names):
+        raise ValueError('CHANNEL_INDEX must cover every input channel contiguously')
+    channel_names = np.asarray(channel_names, dtype=str)
+    feature_mean = np.asarray(data.mean, dtype=np.float32).reshape(-1)
+    feature_std = np.asarray(data.std, dtype=np.float32).reshape(-1)
+    if not (len(channel_names) == len(feature_mean) == len(feature_std)):
+        raise ValueError('Channel names and normalization statistics have different lengths')
+
     captures = {}
     handles = []
     for name, module in attention_modules:
@@ -93,13 +107,26 @@ def main():
             if tuple(attention.shape[1:]) != expected:
                 raise ValueError(f'Unexpected attention shape {tuple(attention.shape)}; expected [L, {expected}]')
 
+            # Model inputs: [T, C, H, W]. Preserve both standardized and
+            # de-standardized values so plots can be interpreted in original units.
+            features_standardized = features[0].detach().float().cpu().numpy()
+            if features_standardized.shape[1] != len(channel_names):
+                raise ValueError(f'Input has {features_standardized.shape[1]} channels, '
+                                 f'but CHANNEL_INDEX defines {len(channel_names)}')
+            features_raw = (features_standardized * feature_std[None, :, None, None]
+                            + feature_mean[None, :, None, None]).astype(np.float32)
+
             def raw_channel(channel):
-                i = CHANNEL_INDEX[channel]
-                return (features[0, :, i] * float(data.std[i]) + float(data.mean[i])).cpu().numpy()
+                return features_raw[:, CHANNEL_INDEX[channel]]
 
             # Wind and fire history are on the same node grid as attention.
             arrays = {
                 'attention': attention.numpy(),  # [layers, time, heads, neighbor, row, col]
+                'features': features_raw,  # [time, channel, row, col], original units
+                'features_standardized': features_standardized,  # exact model input
+                'channel_names': channel_names,
+                'feature_mean': feature_mean,
+                'feature_std': feature_std,
                 'valid': valid[0].cpu().numpy().astype(np.uint8),
                 'wind_row': raw_channel('wind_row').astype(np.float32),
                 'wind_col': raw_channel('wind_col').astype(np.float32),
@@ -116,7 +143,8 @@ def main():
             manifest.append({'file': path.name, 'fire_index': fire_index, 'day': day,
                              'fold': args.fold, 'seed': args.seed, 'checkpoint': str(ckpt),
                              'attention_modules': [name for name, _ in attention_modules]})
-            print(f'[{number+1}/{len(fire_indices)}] {path} attention={tuple(attention.shape)}', flush=True)
+            print(f'[{number+1}/{len(fire_indices)}] {path} attention={tuple(attention.shape)} '
+                  f'features={tuple(features_raw.shape)}', flush=True)
     finally:
         for handle in handles:
             handle.remove()
