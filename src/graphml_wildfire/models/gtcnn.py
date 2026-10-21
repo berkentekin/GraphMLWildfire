@@ -25,6 +25,21 @@ class NodeNorm(nn.Module):
         return state * scale * self.weight + self.bias
 
 
+class UniformSpatialShift(nn.Module):
+    """Uniform weights over valid neighbors."""
+
+    def __init__(self, heads: int):
+        super().__init__()
+        self.heads = heads
+
+    def forward(self, state: torch.Tensor, pair_valid: torch.Tensor) -> torch.Tensor:
+        valid = pair_valid.float()
+
+        weights = valid / valid.sum(dim=1, keepdim=True).clamp_min(1)
+
+        return weights.unsqueeze(1).expand(-1, self.heads, -1, -1, -1)
+
+
 class EdgeAttention(nn.Module):
     """The learned shift operator: GATv2-style attention over the stencil.
 
@@ -68,7 +83,7 @@ class GraphTimeLayer(nn.Module):
     and the four weights s = softmax(s_global + W_gate x_i) are chosen per node from its state.
     """
 
-    def __init__(self, channels: int, taps: int, heads: int, offsets: list[tuple[int, int]], dropout: float):
+    def __init__(self, channels: int, taps: int, heads: int, offsets: list[tuple[int, int]], dropout: float, uniform=False):
         super().__init__()
         self.taps, self.offsets = taps, offsets
         self.mix = nn.Parameter(torch.tensor([0.0, 1.0, 1.0, 1.0]))
@@ -76,7 +91,13 @@ class GraphTimeLayer(nn.Module):
         self.gate = nn.Conv2d(channels, 4, 1)
         nn.init.zeros_(self.gate.weight)
         nn.init.zeros_(self.gate.bias)
-        self.attention = EdgeAttention(channels, heads, offsets)
+        if uniform:
+            print("DEBUG: Uniform set")
+        self.attention = (
+            UniformSpatialShift(heads)
+                if uniform
+                else EdgeAttention(channels, heads, offsets)
+            )
         self.filter = nn.Conv2d(channels * (taps + 1), channels, 1)
         self.norm = NodeNorm(channels)
         self.dropout = nn.Dropout(dropout)
@@ -105,11 +126,11 @@ class GraphTimeLayer(nn.Module):
 class GraphTimeCNN(nn.Module):
     """Node states of the last day of a window of daily node features."""
 
-    def __init__(self, in_channels: int, hidden: int = 64, layers: int = 4, taps: int = 3, heads: int = 4, dropout: float = 0.1):
+    def __init__(self, in_channels: int, hidden: int = 64, layers: int = 4, taps: int = 3, heads: int = 4, dropout: float = 0.1, uniform=False):
         super().__init__()
         self.offsets = stencil_offsets(hops=1)
         self.encoder = nn.Conv2d(in_channels, hidden, 1)
-        self.layers = nn.ModuleList(GraphTimeLayer(hidden, taps, heads, self.offsets, dropout) for _ in range(layers))
+        self.layers = nn.ModuleList(GraphTimeLayer(hidden, taps, heads, self.offsets, dropout, uniform=uniform) for _ in range(layers))
 
     def forward(self, features: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
         """`features` [B, T, C, H, W], `valid` [B, H, W] (1 on real nodes). Returns [B, hidden, H, W]."""

@@ -34,7 +34,7 @@ from .data.pixels import PIXEL_CHANNELS
 from .models import ConvNet, NodeMLP, Persistence, PixelGraphTimeCNN
 
 
-MODELS = ("pixel_gtcnn", "cnn", "mlp", "logreg", "persistence")
+MODELS = ("pixel_gtcnn", "pixel_gtcnn_uniform",  "cnn", "mlp", "logreg", "persistence")
 warnings.filterwarnings("ignore", message="The given NumPy array is not writable")
 
 _ROW_CHANNELS = [CHANNEL_INDEX[name] for name in ("wind_row", "aspect_row", "fc_wind_row")]
@@ -105,8 +105,8 @@ class FireData:
         fold = PROTOCOLS[config.protocol][config.fold]
         train_years = set(fold.train_years)
         self.window, self.patch, self.node_pixels = config.window, config.patch, config.patch**2
-        self.input_channels = _GRAPH_INPUTS if config.model == "pixel_gtcnn" else list(range(len(CHANNELS)))
-        self.pixels = [] if config.model == "pixel_gtcnn" else None
+        self.input_channels = _GRAPH_INPUTS if config.model in ["pixel_gtcnn", "pixel_gtcnn_uniform"] else list(range(len(CHANNELS)))
+        self.pixels = [] if config.model in ["pixel_gtcnn", "pixel_gtcnn_uniform"] else None
         self.fires, self.targets, self.samples = [], [], {"train": [], "val": [], "test": []}
         self.centre_windows = []  # node-aligned window around the centre 128 x 128 pixels of every fire
         split_of = {**{year: "train" for year in train_years}, **{year: "val" for year in fold.validation_years}, **{year: "test" for year in fold.test_years}}
@@ -278,6 +278,9 @@ def build_model(config: TrainConfig, data: FireData) -> nn.Module:
     if config.model == "pixel_gtcnn":
         return PixelGraphTimeCNN(channels, len(PIXEL_CHANNELS), config.patch, config.pixel_hidden, config.decoder_hidden,
                                  hidden=config.hidden, layers=config.layers, taps=config.taps, heads=config.heads, dropout=config.dropout)
+    if config.model == "pixel_gtcnn_uniform":
+        return PixelGraphTimeCNN(channels, len(PIXEL_CHANNELS), config.patch, config.pixel_hidden, config.decoder_hidden,
+                                 hidden=config.hidden, layers=config.layers, taps=config.taps, heads=config.heads, dropout=config.dropout, uniform=True)
     if config.model == "cnn":
         return ConvNet(channels, config.window, config.hidden, config.dropout)
     if config.model == "mlp":
@@ -426,7 +429,20 @@ def run(config: TrainConfig) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train a next-day wildfire spread model")
     for field in fields(TrainConfig):
-        parser.add_argument(f"--{field.name.replace('_', '-')}", type=field.type, default=field.default)
+        arg = f"--{field.name.replace('_', '-')}"
+
+        if field.type is bool:
+            parser.add_argument(
+                arg,
+                action=argparse.BooleanOptionalAction,
+                default=field.default,
+            )
+        else:
+            parser.add_argument(
+                arg,
+                type=field.type,
+                default=field.default,
+            ) 
     run(TrainConfig(**vars(parser.parse_args())))
 
 

@@ -25,5 +25,6 @@ where = ["src"]
 
 [dependency-groups]
 dev = [
+    "black>=26.10.1",
     "bpython>=0.26",
 ]
