@@ -239,6 +239,44 @@ Training reads the memory-mapped cache of `data/mmap.py` (`data/cache/b<patch>`)
 
 To add a model, run it on all 12 folds writing one record per fold to `results/benchmark_runs.jsonl` with `test_ap_centre128`, `test_f1` and `test_iou` computed as in `train.run` (from a `centre_input=True` pass), then paste its row from `benchmark summary` into the table.
 
+### Partial no-graph ablation: two folds, three seeds
+
+The no-graph variant (`pixel_time_none`) removes current-day and previous-day
+graph-neighbour messages, retaining same-node temporal processing and the pixel
+CNN's spatial context. It has **97,777 trainable parameters**, compared with
+115,441 for the learned-graph model. All six completed runs are stored together
+in [results/benchmark_runs.jsonl](results/benchmark_runs.jsonl).
+
+These results cover **folds 0 and 3 only**, with **seeds 0, 1, and 2**; they are
+not a completed 12-fold benchmark and are separate from the leaderboard above.
+
+| Seed | AP fold 0 | AP fold 3 | Mean AP | Mean F1 | Mean IoU |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 0.5824 | 0.3475 | 0.4649 | 0.4505 | 0.2963 |
+| 1 | 0.5748 | 0.3403 | 0.4575 | 0.4230 | 0.2720 |
+| 2 | 0.5704 | 0.3235 | 0.4469 | 0.4373 | 0.2842 |
+| Mean +/- sample std across seed averages | - | - | 0.4565 +/- 0.0090 | 0.4369 +/- 0.0138 | 0.2842 +/- 0.0121 |
+
+AP is `test_ap_centre128`; F1 and IoU use probability threshold 0.5. Each seed's
+mean gives equal weight to the two folds. The final row reports the mean and
+sample standard deviation (`ddof=1`) of those three seed averages, not the
+variation across six independent folds. This uncertainty is not the 12-fold
+leaderboard's fold-wise standard deviation.
+
+All runs used 30 epochs, training batch 32, evaluation batch 1, FP16, and
+compilation disabled, with the model/training recipe from commit
+`dfdc5c28d20dd46635f008e602a230efc57ddc26`. Seed 0 ran on a Kaggle Tesla T4;
+seeds 1 and 2 ran on an RTX PRO 4000 Blackwell. Hardware differs despite matching
+resolved precision; evaluation batch size and compilation also differ from the
+original learned-model runtime. Compare graph variants on matching folds and
+seeds rather than interpreting these results as a matched 12-fold comparison.
+
+The records retain their original `data_dir`, `checkpoint_dir`, and
+`results_file` values as execution provenance. These historical Kaggle/server
+paths are not required local directories; the shared JSONL above is the results
+location for this report. This results-only contribution adds no training code
+or Kaggle notebook.
+
 ## Pixel-graph-time CNN
 
 The model behind our best result: a graph-time convolutional network ([Isufi & Mazzola, 2021](https://arxiv.org/abs/2103.01730)) on a grid of 0.75 km nodes whose spatial shift operator is learned, wrapped in a 375 m pixel encoder and decoder. 115,441 parameters, trained from scratch.
