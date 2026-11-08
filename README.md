@@ -295,7 +295,7 @@ uv run python -m graphml_wildfire.benchmark summary
 
 Each fold needs ~12 GB of GPU memory. Checkpoints go to `data/checkpoints/`; `uv run python -m graphml_wildfire.evaluate data/checkpoints/<run>.pt` re-scores one under the protocol.
 
-### Matched graph ablations and Kaggle
+### Matched graph ablations
 
 Use `--model pixel_gtcnn --graph-mode MODE` to change only the graph-neighbour
 operations inside the pixel-graph-time architecture:
@@ -342,34 +342,6 @@ uv run python -m graphml_wildfire.train --graph-mode learned --precision auto --
 The best weights and a configuration JSON are saved whenever validation AP
 improves. These are not full training-resume checkpoints. Completed runs append
 AP, F1, IoU, parameter count, and timing to the results JSONL as before.
-
-For Kaggle, import [the notebook](notebooks/kaggle_pixel_time_ablations.ipynb).
-First commit/push `wishaal/pixel-time-ablations-kaggle` so its private-repository
-clone cell can find the new code. Attach the extracted cache dataset, enable a
-GPU/Internet, and add a read-only `GITHUB_TOKEN` through Kaggle Secrets. The
-notebook reuses Kaggle's GPU PyTorch, disables W&B uploads, checks the cache,
-smoke-tests and trains only uniform graph, and exports per-fold metrics, differences
-against the recorded learned-model results on matching folds/seeds, and best
-checkpoints under `/kaggle/working`. Training is opt-in; defaults are folds
-0 and 3 only, seed 0, 30 epochs, and training batch 32 to match Marcin's recorded
-recipe. The smoke test uses batch 32 too; this may exceed T4 memory. Runtime
-precision, evaluation batch size (1 rather than 8), and compilation differ from
-the original runs. Even two folds may exceed one Kaggle session, so preserve
-outputs between sessions. This is not the full 12-fold benchmark.
-Partial summaries compare only matching finished
-folds and are clearly labelled; smoke diagnostics are not benchmark results.
-Uniform runs use `/kaggle/working/pixel_time_uniform` and a separate results ZIP
-so they do not overwrite earlier no-graph outputs. Download those earlier
-outputs before ending their session.
-
-The notebook explicitly streams training/smoke subprocess stdout and stderr into
-cell output and timestamped files under the output directory's `logs/`. Training
-prints batch progress about once per minute between batches, plus epoch,
-evaluation, cache-loading, and checkpoint messages. Saved-version log display
-can still be delayed by Kaggle; interactive execution shows the streamed cell
-output. The results ZIP is refreshed after each fold and on a normal Python
-error/interrupt. Hard runtime termination can bypass that export, and local
-working files still need to be downloaded or preserved as version outputs.
 
 Local CPU verification (synthetic cache; no real-data accuracy claims):
 
