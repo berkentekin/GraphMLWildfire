@@ -21,6 +21,26 @@ class NodeMLP(nn.Module):
         return self.net(features.flatten(1, 2)).squeeze(1)
 
 
+class NodeLSTM(nn.Module):
+    """Run an LSTM over every node's own sequence of daily features and classify it from the last
+    hidden state. Nodes never exchange information, so the graph is not used."""
+
+    def __init__(self, in_channels: int, hidden: int = 64, layers: int = 2, dropout: float = 0.1, chunk: int = 2**16):
+        super().__init__()
+        self.lstm = nn.LSTM(in_channels, hidden, num_layers=layers, batch_first=True, dropout=dropout if layers > 1 else 0.0)
+        self.dropout = nn.Dropout(dropout)
+        self.head = nn.Conv2d(hidden, 1, 1)
+        # Nodes per LSTM call: full test images hold far more nodes than cuDNN accepts in one batch.
+        self.chunk = chunk
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        batch, window, channels, height, width = features.shape
+        sequences = features.permute(0, 3, 4, 1, 2).reshape(-1, window, channels)
+        last = torch.cat([self.lstm(part)[0][:, -1] for part in sequences.split(self.chunk)])
+        state = last.reshape(batch, height, width, -1).permute(0, 3, 1, 2)
+        return self.head(self.dropout(state)).squeeze(1)
+
+
 class Persistence(nn.Module):
     """Tomorrow burns where today burns: the logit of the node's burning fraction today."""
 
